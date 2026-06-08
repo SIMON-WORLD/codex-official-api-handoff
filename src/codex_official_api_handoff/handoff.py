@@ -127,6 +127,52 @@ def copy_thread_to_provider(paths: CodexPaths, source: ThreadRecord, target_prov
         store.close()
 
 
+def copy_one(
+    paths: CodexPaths,
+    source_id: str,
+    target: str,
+    apply: bool,
+    api_provider: str | None,
+    backup_base: Path,
+    name: str | None = None,
+) -> list[str]:
+    messages: list[str] = []
+    current_provider = read_model_provider(paths.config)
+    inferred_api_provider = api_provider or (current_provider if current_provider and current_provider != OFFICIAL_PROVIDER else None)
+    if not inferred_api_provider:
+        raise RuntimeError("Cannot infer API provider. Pass --api-provider, for example --api-provider openai-chat-completions.")
+
+    store = ThreadStore(paths.state_db, readonly=True)
+    try:
+        source = store.get(source_id)
+        target_provider = inferred_api_provider if target == "api" else OFFICIAL_PROVIDER
+        messages.append(f"source={source.id} provider={source.provider}")
+        messages.append(f"target_provider={target_provider}")
+        messages.append(f"title={source.title[:100]}")
+        if source.provider == target_provider:
+            raise RuntimeError(f"Source is already in target provider: {target_provider}")
+    finally:
+        store.close()
+
+    if not apply:
+        messages.append("dry_run=true")
+        messages.append("rerun with --apply to copy this one thread")
+        return messages
+
+    backup_root = create_full_backup(paths.home, backup_base)
+    messages.append(f"backup={backup_root}")
+    pair = copy_thread_to_provider(paths, source, target_provider, apply=True)
+    if pair is None:
+        raise RuntimeError("copy_thread_to_provider returned no pair")
+    if name:
+        pair.name = name
+    pairs = load_pairs(paths.pairs_file)
+    pairs.append(pair)
+    save_pairs(paths.pairs_file, pairs)
+    messages.append(f"copied official={pair.official} api={pair.api} pair={pair.name}")
+    return messages
+
+
 def is_automation_thread(record: ThreadRecord) -> bool:
     return record.title.startswith("Automation:")
 

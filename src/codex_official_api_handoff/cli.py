@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 
 from .config import read_model_provider
-from .handoff import run_to
+from .handoff import copy_one, run_to
 from .pairs import Pair, load_pairs, pair_names, save_pairs
 from .paths import CodexPaths, default_codex_home
 from .sqlite_store import ThreadStore
@@ -39,6 +39,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_parser.add_argument("--api", required=True)
     add_parser.add_argument("--api-provider", required=True)
     add_parser.add_argument("--workspace")
+
+    copy_parser = subparsers.add_parser("copy-one")
+    copy_parser.add_argument("thread_id")
+    copy_parser.add_argument("--to", choices=["api", "official"], required=True)
+    copy_parser.add_argument("--apply", action="store_true", help="Write changes. Default is dry-run.")
+    copy_parser.add_argument("--api-provider", help="API provider id, e.g. openai-chat-completions.")
+    copy_parser.add_argument("--name", help="Pair name to store when --apply is used.")
 
     return parser
 
@@ -99,6 +106,20 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "pair":
         return run_pair(paths, args)
+
+    if args.command == "copy-one":
+        messages = copy_one(
+            paths,
+            source_id=args.thread_id,
+            target=args.to,
+            apply=args.apply,
+            api_provider=args.api_provider,
+            backup_base=args.backup_base,
+            name=args.name,
+        )
+        for message in messages:
+            print(message)
+        return 0
 
     if args.command == "to":
         messages = run_to(

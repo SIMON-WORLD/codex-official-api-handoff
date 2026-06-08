@@ -45,6 +45,13 @@ codex-official-api-handoff pair list
 登记和查看 official/API 会话对。工具只会自动同步已经登记的 pair。
 
 ```powershell
+codex-official-api-handoff copy-one THREAD_ID --to official [--apply] [--name NAME]
+codex-official-api-handoff copy-one THREAD_ID --to api [--apply] [--api-provider PROVIDER] [--name NAME]
+```
+
+只复制指定的一条会话到目标 provider，并在 `--apply` 时登记 pair。适合先把当前正在使用的某一条会话接入 handoff 流程。
+
+```powershell
 codex-official-api-handoff to api [--apply] [--api-provider PROVIDER]
 ```
 
