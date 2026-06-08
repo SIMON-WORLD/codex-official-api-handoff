@@ -28,6 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     to_parser.add_argument("--api-provider", help="API provider id, e.g. openai-chat-completions.")
     to_parser.add_argument("--copy-new", action="store_true", help="Copy unpaired active source-provider threads.")
     to_parser.add_argument("--include-automation", action="store_true", help="Allow copying Automation: threads.")
+    to_parser.add_argument("--show-new", action="store_true", help="List unpaired copy-new candidates in dry-run output.")
 
     pair_parser = subparsers.add_parser("pair")
     pair_subparsers = pair_parser.add_subparsers(dest="pair_command", required=True)
@@ -108,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
             backup_base=args.backup_base,
             copy_new=args.copy_new,
             include_automation=args.include_automation,
+            show_new=args.show_new,
         )
         for message in messages:
             print(message)

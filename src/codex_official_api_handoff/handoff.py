@@ -139,6 +139,7 @@ def run_to(
     backup_base: Path,
     copy_new: bool = False,
     include_automation: bool = False,
+    show_new: bool = False,
 ) -> list[str]:
     messages: list[str] = []
     current_provider = read_model_provider(paths.config)
@@ -178,10 +179,11 @@ def run_to(
         save_pairs(paths.pairs_file, pairs)
     else:
         if candidates and not copy_new:
-            messages.append("copy-new skipped; rerun with --copy-new to copy these candidates")
-        for record in candidates[:20]:
-            messages.append(f"would copy {record.id}: {record.title[:80]}")
-        if len(candidates) > 20:
-            messages.append(f"... and {len(candidates) - 20} more")
+            messages.append("copy-new skipped; rerun with --copy-new to copy candidates")
+        if show_new:
+            for record in candidates[:20]:
+                messages.append(f"would copy {record.id}: {record.title[:80]}")
+            if len(candidates) > 20:
+                messages.append(f"... and {len(candidates) - 20} more")
 
     return messages

@@ -49,12 +49,14 @@ codex-official-api-handoff to api [--apply] [--api-provider PROVIDER]
 ```
 
 同步所有已登记 pair，并准备从 official `openai` 模式交接到 API provider。默认不会复制未配对的新会话；如需复制，需要显式加 `--copy-new`。
+如需在 dry-run 中列出未配对候选明细，可加 `--show-new`。
 
 ```powershell
 codex-official-api-handoff to official [--apply] [--api-provider PROVIDER]
 ```
 
 同步所有已登记 pair，并准备从 API provider 交接回 official `openai`。默认不会复制未配对的新会话；如需复制，需要显式加 `--copy-new`。
+如需在 dry-run 中列出未配对候选明细，可加 `--show-new`。
 
 ## 备份与回滚
 
