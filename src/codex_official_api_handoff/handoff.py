@@ -63,7 +63,9 @@ def append_session_index(path: Path, thread_id: str, title: str) -> None:
         handle.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
-def preferred_title(official: ThreadRecord, api: ThreadRecord) -> str:
+def preferred_title(pair: Pair, official: ThreadRecord, api: ThreadRecord) -> str:
+    if pair.title:
+        return pair.title
     official_updated = official.data.get("updated_at") or 0
     api_updated = api.data.get("updated_at") or 0
     if api_updated >= official_updated and api.title:
@@ -78,7 +80,7 @@ def sync_pair(paths: CodexPaths, pair: Pair, apply: bool) -> SyncReport:
     try:
         official = store.get(pair.official)
         api = store.get(pair.api)
-        title = preferred_title(official, api)
+        title = preferred_title(pair, official, api)
         official_lines = load_jsonl(official.rollout_path)
         api_lines = load_jsonl(api.rollout_path)
 
@@ -321,6 +323,8 @@ def set_pair_title(paths: CodexPaths, pair_name: str, title: str, apply: bool) -
     if not apply:
         messages.append("dry_run=true")
         return messages
+    pair.title = title
+    save_pairs(paths.pairs_file, pairs)
     store = ThreadStore(paths.state_db)
     try:
         store.update_title(pair.official, title)

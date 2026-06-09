@@ -12,6 +12,7 @@ class Pair:
     api: str
     api_provider: str
     workspace: str | None = None
+    title: str | None = None
 
 
 def load_pairs(path: Path) -> list[Pair]:
@@ -37,4 +38,3 @@ def paired_ids(pairs: list[Pair]) -> set[str]:
         ids.add(pair.official)
         ids.add(pair.api)
     return ids
-
