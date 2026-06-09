@@ -13,6 +13,15 @@
 
 ## 日常命令
 
+推荐日常使用短命令：
+
+```powershell
+codex-handoff api
+codex-handoff official
+```
+
+它会先用中文显示预览报告，不会立即写入；确认后才会执行同步并备份。
+
 准备从官方 OpenAI 登录模式切到 API 模式：
 
 ```powershell
@@ -29,7 +38,16 @@ codex-official-api-handoff to official --apply --api-provider openai-chat-comple
 
 不带 `--apply` 时，命令默认是 dry-run，只报告将会做什么，不写入任何文件。
 
+`dry-run` 可以理解为“演练模式”或“预览模式”。
+
 ## 命令说明
+
+```powershell
+codex-handoff api
+codex-handoff official
+```
+
+短命令。它会自动预览、中文提示、询问确认，然后执行同步。默认使用 `quick` 快速备份。
 
 ```powershell
 codex-official-api-handoff doctor
@@ -57,6 +75,7 @@ codex-official-api-handoff to api [--apply] [--api-provider PROVIDER]
 
 同步所有已登记 pair，并准备从 official `openai` 模式交接到 API provider。默认不会复制未配对的新会话；如需复制，需要显式加 `--copy-new`。
 如需在 dry-run 中列出未配对候选明细，可加 `--show-new`。
+写入时可选择 `--backup quick` 或 `--backup full`。
 
 ```powershell
 codex-official-api-handoff to official [--apply] [--api-provider PROVIDER]
@@ -64,10 +83,11 @@ codex-official-api-handoff to official [--apply] [--api-provider PROVIDER]
 
 同步所有已登记 pair，并准备从 API provider 交接回 official `openai`。默认不会复制未配对的新会话；如需复制，需要显式加 `--copy-new`。
 如需在 dry-run 中列出未配对候选明细，可加 `--show-new`。
+写入时可选择 `--backup quick` 或 `--backup full`。
 
 ## 备份与回滚
 
-写入前的完整备份默认保存到：
+备份默认保存到：
 
 ```text
 D:\codex-backups\codex-official-api-handoff\YYYYMMDD-HHMMSS
@@ -80,6 +100,13 @@ restore-codex-backup.ps1
 ```
 
 如果需要回滚，请先完全退出 Codex，再运行该脚本并加上 `-ConfirmRestore`。
+
+备份模式：
+
+```text
+quick：只备份本次同步会修改的关键文件，速度较快
+full：备份整个 .codex，最安全但较慢
+```
 
 ## 当前状态
 

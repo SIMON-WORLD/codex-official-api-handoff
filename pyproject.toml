@@ -16,7 +16,7 @@ dependencies = []
 
 [project.scripts]
 codex-official-api-handoff = "codex_official_api_handoff.cli:main"
+codex-handoff = "codex_official_api_handoff.short_cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-

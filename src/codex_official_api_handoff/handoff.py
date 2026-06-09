@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .backup import create_full_backup
+from .backup import create_full_backup, create_quick_backup
 from .config import read_model_provider
 from .pairs import Pair, load_pairs, paired_ids, save_pairs
 from .paths import CodexPaths
@@ -25,6 +25,19 @@ class SyncReport:
     extra_lines: int
     encrypted_removed: int
     applied: bool
+
+
+def provider_label(provider: str) -> str:
+    return "官方" if provider == OFFICIAL_PROVIDER else "API"
+
+
+def direction_label(direction: str) -> str:
+    labels = {
+        "none": "无需同步",
+        "api-to-official": "API -> 官方",
+        "official-to-api": "官方 -> API",
+    }
+    return labels.get(direction, direction)
 
 
 def append_session_index(path: Path, thread_id: str, title: str) -> None:
@@ -186,6 +199,7 @@ def run_to(
     copy_new: bool = False,
     include_automation: bool = False,
     show_new: bool = False,
+    backup_mode: str = "full",
 ) -> list[str]:
     messages: list[str] = []
     current_provider = read_model_provider(paths.config)
@@ -200,13 +214,19 @@ def run_to(
         )
 
     if apply:
-        backup_root = create_full_backup(paths.home, backup_base)
-        messages.append(f"backup={backup_root}")
+        if backup_mode == "quick":
+            backup_files = collect_quick_backup_files(paths, pairs)
+            backup_root = create_quick_backup(paths.home, backup_base, backup_files)
+            messages.append(f"备份模式=quick")
+        else:
+            backup_root = create_full_backup(paths.home, backup_base)
+            messages.append(f"备份模式=full")
+        messages.append(f"备份位置={backup_root}")
 
     for pair in pairs:
         report = sync_pair(paths, pair, apply=apply)
         messages.append(
-            f"sync {pair.name}: direction={report.direction} extra={report.extra_lines} encrypted_removed={report.encrypted_removed}"
+            f"同步 {pair.name}：方向={direction_label(report.direction)}，新增事件={report.extra_lines}，过滤加密片段={report.encrypted_removed}"
         )
 
     store = ThreadStore(paths.state_db, readonly=True)
@@ -217,7 +237,9 @@ def run_to(
         candidates = [record for record in store.active_by_provider(source_provider) if record.id not in known]
         if not include_automation:
             candidates = [record for record in candidates if not is_automation_thread(record)]
-        messages.append(f"copy-new candidates from {source_provider} to {target_provider}: {len(candidates)}")
+        messages.append(
+            f"未配对候选：{provider_label(source_provider)} -> {provider_label(target_provider)} 共 {len(candidates)} 条"
+        )
     finally:
         store.close()
 
@@ -230,7 +252,7 @@ def run_to(
         save_pairs(paths.pairs_file, pairs)
     else:
         if candidates and not copy_new:
-            messages.append("copy-new skipped; rerun with --copy-new to copy candidates")
+            messages.append("本次未复制未配对候选；如需复制，请显式添加 --copy-new")
         if show_new:
             for record in candidates[:20]:
                 messages.append(f"would copy {record.id}: {record.title[:80]}")
@@ -238,3 +260,24 @@ def run_to(
                 messages.append(f"... and {len(candidates) - 20} more")
 
     return messages
+
+
+def collect_quick_backup_files(paths: CodexPaths, pairs: list[Pair]) -> list[Path]:
+    files = [paths.state_db, paths.session_index, paths.pairs_file]
+    store = ThreadStore(paths.state_db, readonly=True)
+    try:
+        for pair in pairs:
+            for thread_id in (pair.official, pair.api):
+                try:
+                    files.append(store.get(thread_id).rollout_path)
+                except KeyError:
+                    continue
+    finally:
+        store.close()
+    seen: set[Path] = set()
+    unique = []
+    for file_path in files:
+        if file_path not in seen:
+            seen.add(file_path)
+            unique.append(file_path)
+    return unique
