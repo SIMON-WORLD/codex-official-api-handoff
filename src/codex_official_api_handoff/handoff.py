@@ -53,14 +53,25 @@ def direction_label(direction: str) -> str:
     return labels.get(direction, direction)
 
 
+def display_title(title: str | None, limit: int = 80) -> str | None:
+    if not title:
+        return None
+    text = " ".join(title.split())
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "..."
+
+
 def report_sync_message(report: SyncReport) -> str:
     if report.direction == "none":
-        title = f"，标题：{report.title}" if report.title else ""
+        short = display_title(report.title)
+        title = f"，标题：{short}" if short else ""
         return f"会话 {report.pair.name}：两边已经一致{title}。"
     source = "API" if report.direction == "api-to-official" else "官方"
     target = "官方" if report.direction == "api-to-official" else "API"
     encrypted = f"，已忽略 provider 加密片段 {report.encrypted_removed} 个" if report.encrypted_removed else ""
-    title = f"，标题：{report.title}" if report.title else ""
+    short = display_title(report.title)
+    title = f"，标题：{short}" if short else ""
     return f"会话 {report.pair.name}：发现{source}侧有新增内容记录 {report.extra_lines} 条，准备同步到{target}{encrypted}{title}。"
 
 
@@ -75,7 +86,10 @@ def append_session_index(path: Path, thread_id: str, title: str) -> None:
         handle.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
-def preferred_title(pair: Pair, official: ThreadRecord, api: ThreadRecord) -> str:
+def preferred_title(pair: Pair, official: ThreadRecord, api: ThreadRecord, forced_title: str | None = None) -> str:
+    if forced_title:
+        pair.title = forced_title
+        return forced_title
     if pair.title_mode == "locked" and pair.title:
         return pair.title
     if pair.title:
@@ -114,12 +128,12 @@ def sync_pair_metadata(store: ThreadStore, pair: Pair, official: ThreadRecord, a
         store.update_archived(api.id, archived)
 
 
-def sync_pair(paths: CodexPaths, pair: Pair, apply: bool) -> SyncReport:
+def sync_pair(paths: CodexPaths, pair: Pair, apply: bool, forced_title: str | None = None) -> SyncReport:
     store = ThreadStore(paths.state_db, readonly=not apply)
     try:
         official = store.get(pair.official)
         api = store.get(pair.api)
-        title = preferred_title(pair, official, api)
+        title = preferred_title(pair, official, api, forced_title=forced_title)
         official_lines = load_jsonl(official.rollout_path)
         api_lines = load_jsonl(api.rollout_path)
 
@@ -478,31 +492,53 @@ def run_mirror(
     selected_ids: set[str] | None = None,
 ) -> list[str]:
     messages: list[str] = []
-    plan = mirror_plan(
-        paths,
-        target,
-        api_provider=api_provider,
-        include_automation=include_automation,
-        include_tests=include_tests,
-        current_workspace_only=current_workspace_only,
-    )
-    selected_to_copy = plan.to_copy
-    if selected_ids is not None:
-        selected_to_copy = [record for record in plan.to_copy if record.id in selected_ids]
-    messages.append(f"镜像方向：{provider_label(plan.source_provider)} -> {provider_label(plan.target_provider)}")
-    messages.append(f"源侧可见会话：{len(plan.visible)} 条")
-    messages.append(f"已接入 handoff：{len(plan.paired)} 条")
-    messages.append(f"可新增接入：{len(plan.to_copy)} 条")
-    if plan.skipped_workspace:
-        messages.append(f"已跳过非当前工作区会话：{plan.skipped_workspace} 条")
-    if plan.skipped_automation:
-        messages.append(f"已跳过自动化会话：{plan.skipped_automation} 条")
-    if plan.skipped_test:
-        messages.append(f"已跳过测试/调试会话：{plan.skipped_test} 条")
-    for record in plan.to_copy[:20]:
+    current_provider = read_model_provider(paths.config)
+    pairs = load_pairs(paths.pairs_file)
+    pair_providers = sorted({pair.api_provider for pair in pairs if pair.api_provider})
+    inferred_api_provider = api_provider or (current_provider if current_provider and current_provider != OFFICIAL_PROVIDER else None)
+    if not inferred_api_provider and len(pair_providers) == 1:
+        inferred_api_provider = pair_providers[0]
+    if not inferred_api_provider:
+        raise RuntimeError("Cannot infer API provider for mirror mode.")
+
+    source_provider = OFFICIAL_PROVIDER if target == "api" else inferred_api_provider
+    target_provider = inferred_api_provider if target == "api" else OFFICIAL_PROVIDER
+    workspaces = known_workspaces(pairs)
+    source_pair_id = (lambda pair: pair.official) if source_provider == OFFICIAL_PROVIDER else (lambda pair: pair.api)
+    target_pair_id = (lambda pair: pair.api) if target_provider != OFFICIAL_PROVIDER else (lambda pair: pair.official)
+    pairs_by_source_id = {source_pair_id(pair): pair for pair in pairs}
+
+    store = ThreadStore(paths.state_db, readonly=True)
+    try:
+        source_visible = store.active_by_provider(source_provider)
+        target_visible = store.active_by_provider(target_provider)
+        if current_workspace_only and workspaces:
+            source_visible = [record for record in source_visible if record.cwd in workspaces]
+            target_visible = [record for record in target_visible if record.cwd in workspaces]
+        if not include_automation:
+            source_visible = [record for record in source_visible if not is_automation_thread(record)]
+            target_visible = [record for record in target_visible if not is_automation_thread(record)]
+        paired_source = [record for record in source_visible if record.id in pairs_by_source_id]
+        unpaired_source = [record for record in source_visible if record.id not in pairs_by_source_id]
+        if selected_ids is not None:
+            source_to_copy = [record for record in unpaired_source if record.id in selected_ids]
+        else:
+            source_to_copy = unpaired_source
+        expected_target_ids = {target_pair_id(pairs_by_source_id[record.id]) for record in paired_source}
+        target_extras = [record for record in target_visible if record.id not in expected_target_ids]
+    finally:
+        store.close()
+
+    selected_to_copy = source_to_copy
+    messages.append(f"镜像方向：{provider_label(source_provider)} -> {provider_label(target_provider)}")
+    messages.append(f"源侧左侧会话：{len(source_visible)} 条")
+    messages.append(f"已接入 handoff：{len(paired_source)} 条")
+    messages.append(f"将新增接入：{len(selected_to_copy)} / {len(unpaired_source)} 条")
+    messages.append(f"目标侧将归档隐藏多余会话：{len(target_extras)} 条")
+    for record in unpaired_source[:20]:
         messages.append(f"  - {record.id}  {record.title.replace(chr(10), ' ')[:80]}")
-    if len(plan.to_copy) > 20:
-        messages.append(f"  ... 还有 {len(plan.to_copy) - 20} 条")
+    if len(unpaired_source) > 20:
+        messages.append(f"  ... 还有 {len(unpaired_source) - 20} 条")
     if selected_ids is not None:
         messages.append(f"本次选择接入：{len(selected_to_copy)} 条")
 
@@ -513,15 +549,41 @@ def run_mirror(
     messages.append("备份模式=full")
     messages.append(f"备份位置={backup_root}")
     pairs = load_pairs(paths.pairs_file)
+    source_records = {record.id: record for record in source_visible}
+    source_titles = {record.id: record.title for record in source_visible}
+    expected_target_ids = set()
+    target_source_map: dict[str, ThreadRecord] = {}
     for pair in pairs:
-        report = sync_pair(paths, pair, apply=True)
+        source_id = source_pair_id(pair)
+        if source_id not in source_titles:
+            continue
+        pair.title = source_titles[source_id]
+        report = sync_pair(paths, pair, apply=True, forced_title=source_titles[source_id])
+        target_id = target_pair_id(pair)
+        expected_target_ids.add(target_id)
+        target_source_map[target_id] = source_records[source_id]
         messages.append(report_sync_message(report))
     for record in selected_to_copy:
-        pair = copy_thread_to_provider(paths, record, plan.target_provider, apply=True)
+        pair = copy_thread_to_provider(paths, record, target_provider, apply=True)
         if pair:
             pair.title = record.title
             pair.title_mode = "auto"
             pairs.append(pair)
+            target_id = target_pair_id(pair)
+            expected_target_ids.add(target_id)
+            target_source_map[target_id] = record
             messages.append(f"已接入：{record.id} -> official={pair.official} api={pair.api}")
+    store = ThreadStore(paths.state_db)
+    try:
+        for target_id, source in target_source_map.items():
+            store.update_from_source(target_id, source, source.title)
+        for record in target_extras:
+            if record.id in expected_target_ids:
+                continue
+            store.update_archived(record.id, True)
+            messages.append(f"已归档隐藏目标侧多余会话：{record.id}  {record.title.replace(chr(10), ' ')[:80]}")
+        store.commit()
+    finally:
+        store.close()
     save_pairs(paths.pairs_file, pairs)
     return messages

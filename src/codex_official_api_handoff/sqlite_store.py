@@ -91,6 +91,23 @@ class ThreadStore:
             ),
         )
 
+    def update_from_source(self, target_id: str, source: ThreadRecord, title: str) -> None:
+        self.connection.execute(
+            """
+            update threads
+            set title = ?, updated_at = ?, updated_at_ms = ?, tokens_used = ?, preview = ?
+            where id = ?
+            """,
+            (
+                title,
+                source.data.get("updated_at"),
+                source.data.get("updated_at_ms"),
+                source.data.get("tokens_used"),
+                source.data.get("preview"),
+                target_id,
+            ),
+        )
+
     def update_title(self, thread_id: str, title: str) -> None:
         self.connection.execute(
             "update threads set title = ? where id = ?",
