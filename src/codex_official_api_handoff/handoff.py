@@ -109,9 +109,7 @@ def sync_pair_metadata(store: ThreadStore, pair: Pair, official: ThreadRecord, a
         store.update_title(official.id, title)
         store.update_title(api.id, title)
     if official.archived != api.archived:
-        official_updated = official.data.get("updated_at") or 0
-        api_updated = api.data.get("updated_at") or 0
-        archived = api.archived if api_updated >= official_updated else official.archived
+        archived = official.archived or api.archived
         store.update_archived(official.id, archived)
         store.update_archived(api.id, archived)
 
@@ -385,6 +383,43 @@ def set_pair_title(paths: CodexPaths, pair_name: str, title: str, apply: bool) -
     append_session_index(paths.session_index, pair.official, title)
     append_session_index(paths.session_index, pair.api, title)
     messages.append("标题已更新。")
+    return messages
+
+
+def refresh_session_index(paths: CodexPaths, apply: bool, backup_base: Path | None = None) -> list[str]:
+    pairs = load_pairs(paths.pairs_file)
+    messages = [f"准备刷新已接入会话的左侧列表标题索引：{len(pairs)} 对"]
+    if not pairs:
+        return messages
+
+    if apply:
+        if backup_base is None:
+            raise RuntimeError("backup_base is required when apply=True")
+        backup_root = create_quick_backup(paths.home, backup_base, [paths.state_db, paths.session_index, paths.pairs_file])
+        messages.append("备份模式=quick")
+        messages.append(f"备份位置={backup_root}")
+
+    store = ThreadStore(paths.state_db, readonly=not apply)
+    try:
+        refreshed = 0
+        for pair in pairs:
+            official = store.get(pair.official)
+            api = store.get(pair.api)
+            title = preferred_title(pair, official, api)
+            if apply:
+                sync_pair_metadata(store, pair, official, api, title)
+                append_session_index(paths.session_index, official.id, title)
+                append_session_index(paths.session_index, api.id, title)
+            refreshed += 2
+            messages.append(f"会话 {pair.name}：{title}")
+        if apply:
+            store.commit()
+            save_pairs(paths.pairs_file, pairs)
+            messages.append(f"已刷新索引记录：{refreshed} 条")
+        else:
+            messages.append("dry_run=true")
+    finally:
+        store.close()
     return messages
 
 

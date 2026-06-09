@@ -129,6 +129,10 @@ def ask_candidate_selection(candidates: list[ThreadRecord]) -> set[str]:
     return {shown[index - 1].id for index in indexes}
 
 
+def candidate_ids(candidates: list[ThreadRecord]) -> set[str]:
+    return {record.id for record in candidates}
+
+
 def run_mirror_short(paths: CodexPaths, target: str, backup_base: Path, yes: bool = False) -> int:
     target_label = "API" if target == "api" else "官方账号"
     print(f"准备镜像左侧会话列表到：{target_label}")
@@ -136,11 +140,21 @@ def run_mirror_short(paths: CodexPaths, target: str, backup_base: Path, yes: boo
     print()
 
     plan = mirror_plan(paths, target)
+    inclusive_plan = mirror_plan(paths, target, include_tests=True)
+    normal_candidate_ids = candidate_ids(plan.to_copy)
+    suspicious_candidates = [record for record in inclusive_plan.to_copy if record.id not in normal_candidate_ids]
     dry_messages = run_mirror(paths, target, apply=False, backup_base=backup_base)
     for message in dry_messages:
         print(message)
 
     selected_ids = ask_candidate_selection(plan.to_copy)
+    selected_suspicious: set[str] = set()
+    if suspicious_candidates:
+        print()
+        print(f"另有 {len(suspicious_candidates)} 条疑似测试/调试会话默认未接入。")
+        if ask_yes_no("是否查看并手动选择这些会话？"):
+            selected_suspicious = ask_candidate_selection(suspicious_candidates)
+            selected_ids.update(selected_suspicious)
     print()
     if selected_ids:
         print(f"本次将接入新会话：{len(selected_ids)} 条。")
@@ -156,6 +170,7 @@ def run_mirror_short(paths: CodexPaths, target: str, backup_base: Path, yes: boo
         target,
         apply=True,
         backup_base=backup_base,
+        include_tests=bool(selected_suspicious),
         selected_ids=selected_ids,
     )
     for message in apply_messages:

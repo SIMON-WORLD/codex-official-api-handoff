@@ -89,6 +89,7 @@ codex-handoff mirror official
 - 不会删除会话。
 - 写入前使用 `full` 完整备份。
 - 对已经接入 handoff 的会话，会同步正文、标题和归档状态。
+- 归档状态采用保守策略：同一 pair 任意一侧已归档，则同步后两侧都归档。
 - 对尚未接入的会话，会列出候选编号，由用户选择；直接回车表示不接入新会话。
 
 选择示例：
@@ -113,6 +114,13 @@ codex-official-api-handoff title NAME "新的会话标题" --apply
 ```
 
 登记和查看 official/API 会话对。工具只会自动同步已经登记的 pair。
+
+```powershell
+codex-official-api-handoff refresh-index
+codex-official-api-handoff refresh-index --apply
+```
+
+刷新已接入 pair 的左侧列表标题索引。默认只预览；`--apply` 会使用 quick 备份，然后把当前统一标题追加到 `session_index.jsonl`，用于修正 Codex Desktop 左侧列表显示的旧标题。
 
 ```powershell
 codex-official-api-handoff copy-one THREAD_ID --to official [--apply] [--name NAME]

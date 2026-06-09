@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from codex_official_api_handoff.handoff import preferred_title
+from codex_official_api_handoff.handoff import preferred_title, sync_pair_metadata
 from codex_official_api_handoff.pairs import Pair
 from codex_official_api_handoff.rollout import common_prefix
 from codex_official_api_handoff.short_cli import parse_selection
@@ -51,6 +51,31 @@ class SyncLogicTests(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             preferred_title(pair, official, api)
+
+    def test_archive_sync_prefers_archived_even_when_older(self):
+        class Store:
+            def __init__(self):
+                self.archived = {}
+                self.titles = {}
+
+            def update_title(self, thread_id, title):
+                self.titles[thread_id] = title
+
+            def update_archived(self, thread_id, archived):
+                self.archived[thread_id] = archived
+
+        store = Store()
+        pair = Pair("main", "official", "api", "custom", title="same")
+        official = ThreadRecord(
+            {"id": "official", "model_provider": "openai", "title": "same", "rollout_path": "x", "archived": 0, "updated_at": 20}
+        )
+        api = ThreadRecord(
+            {"id": "api", "model_provider": "custom", "title": "same", "rollout_path": "y", "archived": 1, "updated_at": 10}
+        )
+
+        sync_pair_metadata(store, pair, official, api, "same")
+
+        self.assertEqual(store.archived, {"official": True, "api": True})
 
     def test_selection_parser_supports_ranges_and_all(self):
         self.assertEqual(parse_selection("1,3-4", 5), [1, 3, 4])

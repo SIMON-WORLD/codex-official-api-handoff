@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 
 from .config import read_model_provider
-from .handoff import copy_one, run_to, set_pair_title
+from .handoff import copy_one, refresh_session_index, run_to, set_pair_title
 from .pairs import Pair, load_pairs, pair_names, save_pairs
 from .paths import CodexPaths, default_codex_home
 from .sqlite_store import ThreadStore
@@ -52,6 +52,9 @@ def build_parser() -> argparse.ArgumentParser:
     title_parser.add_argument("pair_name")
     title_parser.add_argument("title")
     title_parser.add_argument("--apply", action="store_true")
+
+    index_parser = subparsers.add_parser("refresh-index")
+    index_parser.add_argument("--apply", action="store_true")
 
     return parser
 
@@ -130,6 +133,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "title":
         for message in set_pair_title(paths, args.pair_name, args.title, apply=args.apply):
             print(message)
+        return 0
+
+    if args.command == "refresh-index":
+        for message in refresh_session_index(paths, apply=args.apply, backup_base=args.backup_base):
+            print(message)
+        if not args.apply:
+            print("rerun with --apply to write changes")
         return 0
 
     if args.command == "to":
