@@ -189,15 +189,20 @@ def run_to(
 ) -> list[str]:
     messages: list[str] = []
     current_provider = read_model_provider(paths.config)
+    pairs = load_pairs(paths.pairs_file)
+    pair_providers = sorted({pair.api_provider for pair in pairs if pair.api_provider})
     inferred_api_provider = api_provider or (current_provider if current_provider and current_provider != OFFICIAL_PROVIDER else None)
+    if not inferred_api_provider and len(pair_providers) == 1:
+        inferred_api_provider = pair_providers[0]
     if not inferred_api_provider:
-        raise RuntimeError("Cannot infer API provider. Pass --api-provider, for example --api-provider openai-chat-completions.")
+        raise RuntimeError(
+            "Cannot infer API provider. Pass --api-provider, for example --api-provider openai-chat-completions."
+        )
 
     if apply:
         backup_root = create_full_backup(paths.home, backup_base)
         messages.append(f"backup={backup_root}")
 
-    pairs = load_pairs(paths.pairs_file)
     for pair in pairs:
         report = sync_pair(paths, pair, apply=apply)
         messages.append(
