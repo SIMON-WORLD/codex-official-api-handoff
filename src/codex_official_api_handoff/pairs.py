@@ -13,6 +13,7 @@ class Pair:
     api_provider: str
     workspace: str | None = None
     title: str | None = None
+    title_mode: str = "auto"
 
 
 def load_pairs(path: Path) -> list[Pair]:

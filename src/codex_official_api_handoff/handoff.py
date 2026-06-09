@@ -28,6 +28,18 @@ class SyncReport:
     title: str | None = None
 
 
+@dataclass
+class MirrorPlan:
+    source_provider: str
+    target_provider: str
+    visible: list[ThreadRecord]
+    paired: list[ThreadRecord]
+    to_copy: list[ThreadRecord]
+    skipped_automation: int = 0
+    skipped_test: int = 0
+    skipped_workspace: int = 0
+
+
 def provider_label(provider: str) -> str:
     return "官方" if provider == OFFICIAL_PROVIDER else "API"
 
@@ -64,15 +76,44 @@ def append_session_index(path: Path, thread_id: str, title: str) -> None:
 
 
 def preferred_title(pair: Pair, official: ThreadRecord, api: ThreadRecord) -> str:
-    if pair.title:
+    if pair.title_mode == "locked" and pair.title:
         return pair.title
+    if pair.title:
+        if official.title == api.title:
+            pair.title = official.title
+            return official.title
+        if official.title == pair.title and api.title != pair.title:
+            pair.title = api.title
+            return api.title
+        if api.title == pair.title and official.title != pair.title:
+            pair.title = official.title
+            return official.title
+        raise RuntimeError(
+            f"Title conflict for pair {pair.name}: official={official.title!r}, api={api.title!r}, "
+            f"last_synced={pair.title!r}"
+        )
     official_updated = official.data.get("updated_at") or 0
     api_updated = api.data.get("updated_at") or 0
     if api_updated >= official_updated and api.title:
+        pair.title = api.title
         return api.title
     if official.title:
+        pair.title = official.title
         return official.title
-    return api.title or official.title
+    pair.title = api.title or official.title
+    return pair.title
+
+
+def sync_pair_metadata(store: ThreadStore, pair: Pair, official: ThreadRecord, api: ThreadRecord, title: str | None) -> None:
+    if title:
+        store.update_title(official.id, title)
+        store.update_title(api.id, title)
+    if official.archived != api.archived:
+        official_updated = official.data.get("updated_at") or 0
+        api_updated = api.data.get("updated_at") or 0
+        archived = api.archived if api_updated >= official_updated else official.archived
+        store.update_archived(official.id, archived)
+        store.update_archived(api.id, archived)
 
 
 def sync_pair(paths: CodexPaths, pair: Pair, apply: bool) -> SyncReport:
@@ -99,8 +140,7 @@ def sync_pair(paths: CodexPaths, pair: Pair, apply: bool) -> SyncReport:
             direction = "official-to-api"
         elif len(api_lines) == len(official_lines) and api_common == len(official_lines):
             if apply and title:
-                store.update_title(official.id, title)
-                store.update_title(api.id, title)
+                sync_pair_metadata(store, pair, official, api, title)
                 store.commit()
                 append_session_index(paths.session_index, official.id, title)
                 append_session_index(paths.session_index, api.id, title)
@@ -123,9 +163,7 @@ def sync_pair(paths: CodexPaths, pair: Pair, apply: bool) -> SyncReport:
                 handle.writelines(rewritten)
             now = int(time.time())
             store.update_after_sync(target.id, source, now, now * 1000)
-            if title:
-                store.update_title(official.id, title)
-                store.update_title(api.id, title)
+            sync_pair_metadata(store, pair, official, api, title)
             store.commit()
             append_session_index(paths.session_index, target.id, title or target.title)
             append_session_index(paths.session_index, source.id, title or source.title)
@@ -225,6 +263,16 @@ def is_automation_thread(record: ThreadRecord) -> bool:
     return record.title.startswith("Automation:")
 
 
+def is_test_thread(record: ThreadRecord) -> bool:
+    text = f"{record.title}\n{record.id}".lower()
+    markers = ["sync_test", "测试", "debug"]
+    return any(marker in text for marker in markers)
+
+
+def known_workspaces(pairs: list[Pair]) -> set[str]:
+    return {pair.workspace for pair in pairs if pair.workspace}
+
+
 def run_to(
     paths: CodexPaths,
     target: str,
@@ -261,6 +309,8 @@ def run_to(
     for pair in pairs:
         report = sync_pair(paths, pair, apply=apply)
         messages.append(report_sync_message(report))
+    if apply:
+        save_pairs(paths.pairs_file, pairs)
 
     store = ThreadStore(paths.state_db, readonly=True)
     try:
@@ -343,7 +393,9 @@ def mirror_plan(
     target: str,
     api_provider: str | None = None,
     include_automation: bool = False,
-) -> tuple[str, str, list[ThreadRecord], list[ThreadRecord], list[ThreadRecord]]:
+    include_tests: bool = False,
+    current_workspace_only: bool = True,
+) -> MirrorPlan:
     current_provider = read_model_provider(paths.config)
     pairs = load_pairs(paths.pairs_file)
     pair_providers = sorted({pair.api_provider for pair in pairs if pair.api_provider})
@@ -356,15 +408,25 @@ def mirror_plan(
     source_provider = OFFICIAL_PROVIDER if target == "api" else inferred_api_provider
     target_provider = inferred_api_provider if target == "api" else OFFICIAL_PROVIDER
     known = paired_ids(pairs)
+    workspaces = known_workspaces(pairs)
     store = ThreadStore(paths.state_db, readonly=True)
     try:
         visible = store.active_by_provider(source_provider)
-        automation = [record for record in visible if is_automation_thread(record)]
+        skipped_automation = 0
+        skipped_test = 0
+        skipped_workspace = 0
         if not include_automation:
+            skipped_automation = len([record for record in visible if is_automation_thread(record)])
             visible = [record for record in visible if not is_automation_thread(record)]
+        if not include_tests:
+            skipped_test = len([record for record in visible if is_test_thread(record)])
+            visible = [record for record in visible if not is_test_thread(record)]
+        if current_workspace_only and workspaces:
+            skipped_workspace = len([record for record in visible if record.cwd not in workspaces])
+            visible = [record for record in visible if record.cwd in workspaces]
         paired = [record for record in visible if record.id in known]
         to_copy = [record for record in visible if record.id not in known]
-        return source_provider, target_provider, visible, paired, to_copy
+        return MirrorPlan(source_provider, target_provider, visible, paired, to_copy, skipped_automation, skipped_test, skipped_workspace)
     finally:
         store.close()
 
@@ -376,32 +438,54 @@ def run_mirror(
     backup_base: Path,
     api_provider: str | None = None,
     include_automation: bool = False,
+    include_tests: bool = False,
+    current_workspace_only: bool = True,
+    selected_ids: set[str] | None = None,
 ) -> list[str]:
     messages: list[str] = []
-    source_provider, target_provider, visible, paired, to_copy = mirror_plan(
-        paths, target, api_provider=api_provider, include_automation=include_automation
+    plan = mirror_plan(
+        paths,
+        target,
+        api_provider=api_provider,
+        include_automation=include_automation,
+        include_tests=include_tests,
+        current_workspace_only=current_workspace_only,
     )
-    messages.append(f"镜像方向：{provider_label(source_provider)} -> {provider_label(target_provider)}")
-    messages.append(f"源侧可见会话：{len(visible)} 条")
-    messages.append(f"已接入 handoff：{len(paired)} 条")
-    messages.append(f"将新增接入：{len(to_copy)} 条")
-    for record in to_copy[:20]:
+    selected_to_copy = plan.to_copy
+    if selected_ids is not None:
+        selected_to_copy = [record for record in plan.to_copy if record.id in selected_ids]
+    messages.append(f"镜像方向：{provider_label(plan.source_provider)} -> {provider_label(plan.target_provider)}")
+    messages.append(f"源侧可见会话：{len(plan.visible)} 条")
+    messages.append(f"已接入 handoff：{len(plan.paired)} 条")
+    messages.append(f"可新增接入：{len(plan.to_copy)} 条")
+    if plan.skipped_workspace:
+        messages.append(f"已跳过非当前工作区会话：{plan.skipped_workspace} 条")
+    if plan.skipped_automation:
+        messages.append(f"已跳过自动化会话：{plan.skipped_automation} 条")
+    if plan.skipped_test:
+        messages.append(f"已跳过测试/调试会话：{plan.skipped_test} 条")
+    for record in plan.to_copy[:20]:
         messages.append(f"  - {record.id}  {record.title.replace(chr(10), ' ')[:80]}")
-    if len(to_copy) > 20:
-        messages.append(f"  ... 还有 {len(to_copy) - 20} 条")
+    if len(plan.to_copy) > 20:
+        messages.append(f"  ... 还有 {len(plan.to_copy) - 20} 条")
+    if selected_ids is not None:
+        messages.append(f"本次选择接入：{len(selected_to_copy)} 条")
 
     if not apply:
-        messages.append("dry_run=true")
         return messages
 
     backup_root = create_full_backup(paths.home, backup_base)
     messages.append("备份模式=full")
     messages.append(f"备份位置={backup_root}")
     pairs = load_pairs(paths.pairs_file)
-    for record in to_copy:
-        pair = copy_thread_to_provider(paths, record, target_provider, apply=True)
+    for pair in pairs:
+        report = sync_pair(paths, pair, apply=True)
+        messages.append(report_sync_message(report))
+    for record in selected_to_copy:
+        pair = copy_thread_to_provider(paths, record, plan.target_provider, apply=True)
         if pair:
             pair.title = record.title
+            pair.title_mode = "auto"
             pairs.append(pair)
             messages.append(f"已接入：{record.id} -> official={pair.official} api={pair.api}")
     save_pairs(paths.pairs_file, pairs)

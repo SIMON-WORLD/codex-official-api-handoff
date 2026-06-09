@@ -33,6 +33,10 @@ class ThreadRecord:
     def cwd(self) -> str | None:
         return self.data.get("cwd")
 
+    @property
+    def archived(self) -> bool:
+        return bool(self.data.get("archived") or 0)
+
 
 class ThreadStore:
     def __init__(self, state_db: Path, readonly: bool = False) -> None:
@@ -91,6 +95,14 @@ class ThreadStore:
         self.connection.execute(
             "update threads set title = ? where id = ?",
             (title, thread_id),
+        )
+
+    def update_archived(self, thread_id: str, archived: bool) -> None:
+        if "archived" not in self.columns():
+            return
+        self.connection.execute(
+            "update threads set archived = ? where id = ?",
+            (1 if archived else 0, thread_id),
         )
 
     def commit(self) -> None:

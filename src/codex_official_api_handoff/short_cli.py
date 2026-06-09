@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 
 from .config import read_model_provider
-from .handoff import OFFICIAL_PROVIDER, copy_thread_to_provider, is_automation_thread, run_mirror, run_to
+from .handoff import OFFICIAL_PROVIDER, copy_thread_to_provider, is_automation_thread, mirror_plan, run_mirror, run_to
 from .pairs import load_pairs, paired_ids, save_pairs
 from .paths import CodexPaths, default_codex_home
 from .sqlite_store import ThreadRecord, ThreadStore
@@ -16,6 +16,8 @@ def ask_yes_no(prompt: str) -> bool:
 
 
 def parse_selection(text: str, count: int) -> list[int]:
+    if text.strip().lower() in {"all", "全部"}:
+        return list(range(1, count + 1))
     selected: list[int] = []
     for part in text.replace("，", ",").split(","):
         part = part.strip()
@@ -108,6 +110,60 @@ def run_connect(paths: CodexPaths, target: str, backup_base: Path, yes: bool = F
     return 0
 
 
+def ask_candidate_selection(candidates: list[ThreadRecord]) -> set[str]:
+    if not candidates:
+        return set()
+    shown = candidates[:50]
+    print()
+    print(f"发现 {len(candidates)} 条尚未接入的会话，默认不会全部复制。")
+    print("请选择要带到另一侧的会话；如果只是同步已经接入的会话，直接回车即可。")
+    for index, record in enumerate(shown, 1):
+        title = record.title.replace("\n", " ")[:80]
+        print(f"[{index}] {record.id}  {title}")
+    if len(candidates) > len(shown):
+        print(f"... 还有 {len(candidates) - len(shown)} 条未显示。")
+    selection = input("输入编号，例如 1,3,5 或 1-5；输入 all 表示全部；直接回车表示不接入新会话：").strip()
+    if not selection:
+        return set()
+    indexes = parse_selection(selection, len(shown))
+    return {shown[index - 1].id for index in indexes}
+
+
+def run_mirror_short(paths: CodexPaths, target: str, backup_base: Path, yes: bool = False) -> int:
+    target_label = "API" if target == "api" else "官方账号"
+    print(f"准备镜像左侧会话列表到：{target_label}")
+    print("先进行预览，不会写入文件。")
+    print()
+
+    plan = mirror_plan(paths, target)
+    dry_messages = run_mirror(paths, target, apply=False, backup_base=backup_base)
+    for message in dry_messages:
+        print(message)
+
+    selected_ids = ask_candidate_selection(plan.to_copy)
+    print()
+    if selected_ids:
+        print(f"本次将接入新会话：{len(selected_ids)} 条。")
+    else:
+        print("本次不接入新会话，只同步已经接入 handoff 的会话。")
+    if not yes and not ask_yes_no("确认执行镜像并使用 full 完整备份吗？"):
+        print("已取消。")
+        return 0
+
+    print("开始执行...")
+    apply_messages = run_mirror(
+        paths,
+        target,
+        apply=True,
+        backup_base=backup_base,
+        selected_ids=selected_ids,
+    )
+    for message in apply_messages:
+        print(message)
+    print(f"完成。现在可以用 cc-switch 切换到：{target_label}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="codex-handoff")
     parser.add_argument("target", choices=["api", "official", "connect", "mirror"], help="要切换到 API、官方账号，接入更多会话，或镜像左侧列表。")
@@ -127,23 +183,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.target == "mirror":
         if not args.connect_target:
             parser.error("mirror 需要指定 api 或 official")
-        target_label = "API" if args.connect_target == "api" else "官方账号"
-        print(f"准备镜像左侧会话列表到：{target_label}")
-        print("先进行预览，不会写入文件。")
-        print()
-        dry_messages = run_mirror(paths, args.connect_target, apply=False, backup_base=args.backup_base)
-        for message in dry_messages:
-            print(message)
-        print()
-        if not args.yes and not ask_yes_no("确认执行镜像并使用 full 完整备份吗？"):
-            print("已取消。")
-            return 0
-        print("开始执行...")
-        apply_messages = run_mirror(paths, args.connect_target, apply=True, backup_base=args.backup_base)
-        for message in apply_messages:
-            print(message)
-        print(f"完成。现在可以用 cc-switch 切换到：{target_label}")
-        return 0
+        return run_mirror_short(paths, args.connect_target, args.backup_base, yes=args.yes)
 
     target_label = "API" if args.target == "api" else "官方账号"
     print(f"准备交接到：{target_label}")

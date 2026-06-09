@@ -13,6 +13,13 @@
 
 ## 日常命令
 
+首次安装本机短命令：
+
+```powershell
+cd "E:\OneDrive\Develop\codex-official-api-handoff"
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
 推荐日常使用短命令：
 
 ```powershell
@@ -25,6 +32,13 @@ codex-handoff mirror official
 ```
 
 它会先用中文显示预览报告，不会立即写入；确认后才会执行同步并备份。
+
+日常切换规则：
+
+```text
+准备切到 API      -> 先运行 codex-handoff api
+准备切到官方账号 -> 先运行 codex-handoff official
+```
 
 准备从官方 OpenAI 登录模式切到 API 模式：
 
@@ -65,7 +79,26 @@ codex-handoff mirror api
 codex-handoff mirror official
 ```
 
-实验性镜像模式。它会把当前源 provider 左侧可见的非自动化会话复制到目标 provider，并登记 pair。第一版不会删除会话，也不会批量同步归档状态；写入前使用 `full` 完整备份。
+实验性镜像模式。它的目标是让官方账号和 API 模式的左侧会话列表尽量保持一致。
+
+当前安全策略：
+
+- 默认只处理当前工作区相关会话。
+- 默认跳过 `Automation:` 自动化会话。
+- 默认跳过标题明显包含测试/调试痕迹的会话。
+- 不会删除会话。
+- 写入前使用 `full` 完整备份。
+- 对已经接入 handoff 的会话，会同步正文、标题和归档状态。
+- 对尚未接入的会话，会列出候选编号，由用户选择；直接回车表示不接入新会话。
+
+选择示例：
+
+```text
+1,3,5     只接入第 1、3、5 条
+1-5       接入第 1 到第 5 条
+all       接入当前显示的全部候选
+直接回车  不接入新会话，只同步已接入会话
+```
 
 ```powershell
 codex-official-api-handoff doctor
@@ -129,7 +162,12 @@ full：备份整个 .codex，最安全但较慢
 
 ## 标题同步
 
-同步 pair 时，工具会把 official/API 两侧的会话标题统一为最近更新一侧的标题，并更新 `session_index.jsonl`。
+同步 pair 时，工具默认使用 `auto` 标题模式：
+
+- 如果只有一侧改了标题，采用改过的标题，并同步到另一侧。
+- 如果两侧标题相同，保持一致。
+- 如果两侧都从上次同步标题改成了不同标题，工具会停止并提示标题冲突。
+- 如果某个 pair 设置为 `locked`，则始终使用登记的固定标题。
 
 ## 当前状态
 
