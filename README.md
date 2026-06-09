@@ -20,6 +20,8 @@ codex-handoff api
 codex-handoff official
 codex-handoff connect api
 codex-handoff connect official
+codex-handoff mirror api
+codex-handoff mirror official
 ```
 
 它会先用中文显示预览报告，不会立即写入；确认后才会执行同步并备份。
@@ -57,6 +59,13 @@ codex-handoff connect official
 ```
 
 交互式接入更多会话。工具会列出未接入 handoff 的候选会话，用户输入编号后，只复制选中的会话并登记 pair。
+
+```powershell
+codex-handoff mirror api
+codex-handoff mirror official
+```
+
+实验性镜像模式。它会把当前源 provider 左侧可见的非自动化会话复制到目标 provider，并登记 pair。第一版不会删除会话，也不会批量同步归档状态；写入前使用 `full` 完整备份。
 
 ```powershell
 codex-official-api-handoff doctor

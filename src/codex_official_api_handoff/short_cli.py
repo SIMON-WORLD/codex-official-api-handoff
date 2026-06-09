@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 
 from .config import read_model_provider
-from .handoff import OFFICIAL_PROVIDER, copy_thread_to_provider, is_automation_thread, run_to
+from .handoff import OFFICIAL_PROVIDER, copy_thread_to_provider, is_automation_thread, run_mirror, run_to
 from .pairs import load_pairs, paired_ids, save_pairs
 from .paths import CodexPaths, default_codex_home
 from .sqlite_store import ThreadRecord, ThreadStore
@@ -110,7 +110,7 @@ def run_connect(paths: CodexPaths, target: str, backup_base: Path, yes: bool = F
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="codex-handoff")
-    parser.add_argument("target", choices=["api", "official", "connect"], help="要切换到 API、官方账号，或接入更多会话。")
+    parser.add_argument("target", choices=["api", "official", "connect", "mirror"], help="要切换到 API、官方账号，接入更多会话，或镜像左侧列表。")
     parser.add_argument("connect_target", nargs="?", choices=["api", "official"], help="connect 时要接入到哪里。")
     parser.add_argument("--codex-home", type=Path, default=default_codex_home())
     parser.add_argument("--backup-base", type=Path, default=Path(r"D:\codex-backups\codex-official-api-handoff"))
@@ -123,6 +123,27 @@ def main(argv: list[str] | None = None) -> int:
         if not args.connect_target:
             parser.error("connect 需要指定 api 或 official")
         return run_connect(paths, args.connect_target, args.backup_base, yes=args.yes)
+
+    if args.target == "mirror":
+        if not args.connect_target:
+            parser.error("mirror 需要指定 api 或 official")
+        target_label = "API" if args.connect_target == "api" else "官方账号"
+        print(f"准备镜像左侧会话列表到：{target_label}")
+        print("先进行预览，不会写入文件。")
+        print()
+        dry_messages = run_mirror(paths, args.connect_target, apply=False, backup_base=args.backup_base)
+        for message in dry_messages:
+            print(message)
+        print()
+        if not args.yes and not ask_yes_no("确认执行镜像并使用 full 完整备份吗？"):
+            print("已取消。")
+            return 0
+        print("开始执行...")
+        apply_messages = run_mirror(paths, args.connect_target, apply=True, backup_base=args.backup_base)
+        for message in apply_messages:
+            print(message)
+        print(f"完成。现在可以用 cc-switch 切换到：{target_label}")
+        return 0
 
     target_label = "API" if args.target == "api" else "官方账号"
     print(f"准备交接到：{target_label}")

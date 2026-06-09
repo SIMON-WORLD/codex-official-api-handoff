@@ -336,3 +336,73 @@ def set_pair_title(paths: CodexPaths, pair_name: str, title: str, apply: bool) -
     append_session_index(paths.session_index, pair.api, title)
     messages.append("标题已更新。")
     return messages
+
+
+def mirror_plan(
+    paths: CodexPaths,
+    target: str,
+    api_provider: str | None = None,
+    include_automation: bool = False,
+) -> tuple[str, str, list[ThreadRecord], list[ThreadRecord], list[ThreadRecord]]:
+    current_provider = read_model_provider(paths.config)
+    pairs = load_pairs(paths.pairs_file)
+    pair_providers = sorted({pair.api_provider for pair in pairs if pair.api_provider})
+    inferred_api_provider = api_provider or (current_provider if current_provider and current_provider != OFFICIAL_PROVIDER else None)
+    if not inferred_api_provider and len(pair_providers) == 1:
+        inferred_api_provider = pair_providers[0]
+    if not inferred_api_provider:
+        raise RuntimeError("Cannot infer API provider for mirror mode.")
+
+    source_provider = OFFICIAL_PROVIDER if target == "api" else inferred_api_provider
+    target_provider = inferred_api_provider if target == "api" else OFFICIAL_PROVIDER
+    known = paired_ids(pairs)
+    store = ThreadStore(paths.state_db, readonly=True)
+    try:
+        visible = store.active_by_provider(source_provider)
+        automation = [record for record in visible if is_automation_thread(record)]
+        if not include_automation:
+            visible = [record for record in visible if not is_automation_thread(record)]
+        paired = [record for record in visible if record.id in known]
+        to_copy = [record for record in visible if record.id not in known]
+        return source_provider, target_provider, visible, paired, to_copy
+    finally:
+        store.close()
+
+
+def run_mirror(
+    paths: CodexPaths,
+    target: str,
+    apply: bool,
+    backup_base: Path,
+    api_provider: str | None = None,
+    include_automation: bool = False,
+) -> list[str]:
+    messages: list[str] = []
+    source_provider, target_provider, visible, paired, to_copy = mirror_plan(
+        paths, target, api_provider=api_provider, include_automation=include_automation
+    )
+    messages.append(f"镜像方向：{provider_label(source_provider)} -> {provider_label(target_provider)}")
+    messages.append(f"源侧可见会话：{len(visible)} 条")
+    messages.append(f"已接入 handoff：{len(paired)} 条")
+    messages.append(f"将新增接入：{len(to_copy)} 条")
+    for record in to_copy[:20]:
+        messages.append(f"  - {record.id}  {record.title.replace(chr(10), ' ')[:80]}")
+    if len(to_copy) > 20:
+        messages.append(f"  ... 还有 {len(to_copy) - 20} 条")
+
+    if not apply:
+        messages.append("dry_run=true")
+        return messages
+
+    backup_root = create_full_backup(paths.home, backup_base)
+    messages.append("备份模式=full")
+    messages.append(f"备份位置={backup_root}")
+    pairs = load_pairs(paths.pairs_file)
+    for record in to_copy:
+        pair = copy_thread_to_provider(paths, record, target_provider, apply=True)
+        if pair:
+            pair.title = record.title
+            pairs.append(pair)
+            messages.append(f"已接入：{record.id} -> official={pair.official} api={pair.api}")
+    save_pairs(paths.pairs_file, pairs)
+    return messages
