@@ -441,9 +441,9 @@ def mirror_plan(
     paths: CodexPaths,
     target: str,
     api_provider: str | None = None,
-    include_automation: bool = False,
+    include_automation: bool = True,
     include_tests: bool = False,
-    current_workspace_only: bool = True,
+    current_workspace_only: bool = False,
 ) -> MirrorPlan:
     current_provider = read_model_provider(paths.config)
     pairs = load_pairs(paths.pairs_file)
@@ -486,9 +486,9 @@ def run_mirror(
     apply: bool,
     backup_base: Path,
     api_provider: str | None = None,
-    include_automation: bool = False,
+    include_automation: bool = True,
     include_tests: bool = False,
-    current_workspace_only: bool = True,
+    current_workspace_only: bool = False,
     selected_ids: set[str] | None = None,
 ) -> list[str]:
     messages: list[str] = []
