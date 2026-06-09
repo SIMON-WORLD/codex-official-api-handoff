@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 
 from .config import read_model_provider
-from .handoff import copy_one, run_to
+from .handoff import copy_one, run_to, set_pair_title
 from .pairs import Pair, load_pairs, pair_names, save_pairs
 from .paths import CodexPaths, default_codex_home
 from .sqlite_store import ThreadStore
@@ -47,6 +47,11 @@ def build_parser() -> argparse.ArgumentParser:
     copy_parser.add_argument("--apply", action="store_true", help="Write changes. Default is dry-run.")
     copy_parser.add_argument("--api-provider", help="API provider id, e.g. openai-chat-completions.")
     copy_parser.add_argument("--name", help="Pair name to store when --apply is used.")
+
+    title_parser = subparsers.add_parser("title")
+    title_parser.add_argument("pair_name")
+    title_parser.add_argument("title")
+    title_parser.add_argument("--apply", action="store_true")
 
     return parser
 
@@ -119,6 +124,11 @@ def main(argv: list[str] | None = None) -> int:
             name=args.name,
         )
         for message in messages:
+            print(message)
+        return 0
+
+    if args.command == "title":
+        for message in set_pair_title(paths, args.pair_name, args.title, apply=args.apply):
             print(message)
         return 0
 

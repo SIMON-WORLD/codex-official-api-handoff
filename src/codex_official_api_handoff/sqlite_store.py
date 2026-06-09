@@ -87,6 +87,11 @@ class ThreadStore:
             ),
         )
 
+    def update_title(self, thread_id: str, title: str) -> None:
+        self.connection.execute(
+            "update threads set title = ? where id = ?",
+            (title, thread_id),
+        )
+
     def commit(self) -> None:
         self.connection.commit()
-

@@ -18,6 +18,8 @@
 ```powershell
 codex-handoff api
 codex-handoff official
+codex-handoff connect api
+codex-handoff connect official
 ```
 
 它会先用中文显示预览报告，不会立即写入；确认后才会执行同步并备份。
@@ -50,6 +52,13 @@ codex-handoff official
 短命令。它会自动预览、中文提示、询问确认，然后执行同步。默认使用 `quick` 快速备份。
 
 ```powershell
+codex-handoff connect api
+codex-handoff connect official
+```
+
+交互式接入更多会话。工具会列出未接入 handoff 的候选会话，用户输入编号后，只复制选中的会话并登记 pair。
+
+```powershell
 codex-official-api-handoff doctor
 ```
 
@@ -58,6 +67,7 @@ codex-official-api-handoff doctor
 ```powershell
 codex-official-api-handoff pair add NAME --official OFFICIAL_ID --api API_ID --api-provider PROVIDER
 codex-official-api-handoff pair list
+codex-official-api-handoff title NAME "新的会话标题" --apply
 ```
 
 登记和查看 official/API 会话对。工具只会自动同步已经登记的 pair。
@@ -107,6 +117,10 @@ restore-codex-backup.ps1
 quick：只备份本次同步会修改的关键文件，速度较快
 full：备份整个 .codex，最安全但较慢
 ```
+
+## 标题同步
+
+同步 pair 时，工具会把 official/API 两侧的会话标题统一为最近更新一侧的标题，并更新 `session_index.jsonl`。
 
 ## 当前状态
 

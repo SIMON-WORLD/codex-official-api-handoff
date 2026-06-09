@@ -25,6 +25,7 @@ class SyncReport:
     extra_lines: int
     encrypted_removed: int
     applied: bool
+    title: str | None = None
 
 
 def provider_label(provider: str) -> str:
@@ -40,6 +41,17 @@ def direction_label(direction: str) -> str:
     return labels.get(direction, direction)
 
 
+def report_sync_message(report: SyncReport) -> str:
+    if report.direction == "none":
+        title = f"，标题：{report.title}" if report.title else ""
+        return f"会话 {report.pair.name}：两边已经一致{title}。"
+    source = "API" if report.direction == "api-to-official" else "官方"
+    target = "官方" if report.direction == "api-to-official" else "API"
+    encrypted = f"，已忽略 provider 加密片段 {report.encrypted_removed} 个" if report.encrypted_removed else ""
+    title = f"，标题：{report.title}" if report.title else ""
+    return f"会话 {report.pair.name}：发现{source}侧有新增内容记录 {report.extra_lines} 条，准备同步到{target}{encrypted}{title}。"
+
+
 def append_session_index(path: Path, thread_id: str, title: str) -> None:
     entry = {
         "id": thread_id,
@@ -51,11 +63,22 @@ def append_session_index(path: Path, thread_id: str, title: str) -> None:
         handle.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
+def preferred_title(official: ThreadRecord, api: ThreadRecord) -> str:
+    official_updated = official.data.get("updated_at") or 0
+    api_updated = api.data.get("updated_at") or 0
+    if api_updated >= official_updated and api.title:
+        return api.title
+    if official.title:
+        return official.title
+    return api.title or official.title
+
+
 def sync_pair(paths: CodexPaths, pair: Pair, apply: bool) -> SyncReport:
     store = ThreadStore(paths.state_db, readonly=not apply)
     try:
         official = store.get(pair.official)
         api = store.get(pair.api)
+        title = preferred_title(official, api)
         official_lines = load_jsonl(official.rollout_path)
         api_lines = load_jsonl(api.rollout_path)
 
@@ -73,7 +96,13 @@ def sync_pair(paths: CodexPaths, pair: Pair, apply: bool) -> SyncReport:
             common = official_common
             direction = "official-to-api"
         elif len(api_lines) == len(official_lines) and api_common == len(official_lines):
-            return SyncReport(pair, "none", 0, 0, apply)
+            if apply and title:
+                store.update_title(official.id, title)
+                store.update_title(api.id, title)
+                store.commit()
+                append_session_index(paths.session_index, official.id, title)
+                append_session_index(paths.session_index, api.id, title)
+            return SyncReport(pair, "none", 0, 0, apply, title=title)
         else:
             raise RuntimeError(
                 f"Conflict for pair {pair.name}: api_common={api_common}, official_common={official_common}, "
@@ -92,10 +121,14 @@ def sync_pair(paths: CodexPaths, pair: Pair, apply: bool) -> SyncReport:
                 handle.writelines(rewritten)
             now = int(time.time())
             store.update_after_sync(target.id, source, now, now * 1000)
+            if title:
+                store.update_title(official.id, title)
+                store.update_title(api.id, title)
             store.commit()
-            append_session_index(paths.session_index, target.id, target.title)
+            append_session_index(paths.session_index, target.id, title or target.title)
+            append_session_index(paths.session_index, source.id, title or source.title)
 
-        return SyncReport(pair, direction, len(extra), encrypted_count(extra), apply)
+        return SyncReport(pair, direction, len(extra), encrypted_count(extra), apply, title=title)
     finally:
         store.close()
 
@@ -225,9 +258,7 @@ def run_to(
 
     for pair in pairs:
         report = sync_pair(paths, pair, apply=apply)
-        messages.append(
-            f"同步 {pair.name}：方向={direction_label(report.direction)}，新增事件={report.extra_lines}，过滤加密片段={report.encrypted_removed}"
-        )
+        messages.append(report_sync_message(report))
 
     store = ThreadStore(paths.state_db, readonly=True)
     try:
@@ -237,9 +268,7 @@ def run_to(
         candidates = [record for record in store.active_by_provider(source_provider) if record.id not in known]
         if not include_automation:
             candidates = [record for record in candidates if not is_automation_thread(record)]
-        messages.append(
-            f"未配对候选：{provider_label(source_provider)} -> {provider_label(target_provider)} 共 {len(candidates)} 条"
-        )
+        messages.append(f"另有 {len(candidates)} 条{provider_label(source_provider)}会话尚未接入 handoff，本次已跳过。")
     finally:
         store.close()
 
@@ -252,7 +281,7 @@ def run_to(
         save_pairs(paths.pairs_file, pairs)
     else:
         if candidates and not copy_new:
-            messages.append("本次未复制未配对候选；如需复制，请显式添加 --copy-new")
+            messages.append("如需接入更多会话，请运行交互式 connect 命令。")
         if show_new:
             for record in candidates[:20]:
                 messages.append(f"would copy {record.id}: {record.title[:80]}")
@@ -281,3 +310,25 @@ def collect_quick_backup_files(paths: CodexPaths, pairs: list[Pair]) -> list[Pat
             seen.add(file_path)
             unique.append(file_path)
     return unique
+
+
+def set_pair_title(paths: CodexPaths, pair_name: str, title: str, apply: bool) -> list[str]:
+    pairs = load_pairs(paths.pairs_file)
+    pair = next((item for item in pairs if item.name == pair_name), None)
+    if not pair:
+        raise RuntimeError(f"Pair not found: {pair_name}")
+    messages = [f"会话 {pair.name}：准备统一标题为：{title}"]
+    if not apply:
+        messages.append("dry_run=true")
+        return messages
+    store = ThreadStore(paths.state_db)
+    try:
+        store.update_title(pair.official, title)
+        store.update_title(pair.api, title)
+        store.commit()
+    finally:
+        store.close()
+    append_session_index(paths.session_index, pair.official, title)
+    append_session_index(paths.session_index, pair.api, title)
+    messages.append("标题已更新。")
+    return messages
