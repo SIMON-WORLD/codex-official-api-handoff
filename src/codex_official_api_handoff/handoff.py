@@ -40,6 +40,18 @@ class MirrorPlan:
     skipped_workspace: int = 0
 
 
+@dataclass
+class MirrorDiff:
+    source_provider: str
+    target_provider: str
+    source_count: int
+    target_count: int
+    missing_in_target: list[ThreadRecord]
+    extra_in_target: list[ThreadRecord]
+    paired_source_archived_extras: list[ThreadRecord]
+    paired_source_count: int
+
+
 def provider_label(provider: str) -> str:
     return "官方" if provider == OFFICIAL_PROVIDER else "API"
 
@@ -60,6 +72,10 @@ def display_title(title: str | None, limit: int = 80) -> str | None:
     if len(text) <= limit:
         return text
     return text[:limit] + "..."
+
+
+def display_record(record: ThreadRecord, limit: int = 80) -> str:
+    return f"{record.id}  {display_title(record.title, limit) or record.id}"
 
 
 def report_sync_message(report: SyncReport) -> str:
@@ -118,17 +134,33 @@ def preferred_title(pair: Pair, official: ThreadRecord, api: ThreadRecord, force
     return pair.title
 
 
-def sync_pair_metadata(store: ThreadStore, pair: Pair, official: ThreadRecord, api: ThreadRecord, title: str | None) -> None:
+def sync_pair_metadata(
+    store: ThreadStore,
+    pair: Pair,
+    official: ThreadRecord,
+    api: ThreadRecord,
+    title: str | None,
+    archived: bool | None = None,
+) -> None:
     if title:
         store.update_title(official.id, title)
         store.update_title(api.id, title)
-    if official.archived != api.archived:
-        archived = official.archived or api.archived
+    if archived is not None:
         store.update_archived(official.id, archived)
         store.update_archived(api.id, archived)
+    elif official.archived != api.archived:
+        merged_archived = official.archived or api.archived
+        store.update_archived(official.id, merged_archived)
+        store.update_archived(api.id, merged_archived)
 
 
-def sync_pair(paths: CodexPaths, pair: Pair, apply: bool, forced_title: str | None = None) -> SyncReport:
+def sync_pair(
+    paths: CodexPaths,
+    pair: Pair,
+    apply: bool,
+    forced_title: str | None = None,
+    forced_archived: bool | None = None,
+) -> SyncReport:
     store = ThreadStore(paths.state_db, readonly=not apply)
     try:
         official = store.get(pair.official)
@@ -152,7 +184,7 @@ def sync_pair(paths: CodexPaths, pair: Pair, apply: bool, forced_title: str | No
             direction = "official-to-api"
         elif len(api_lines) == len(official_lines) and api_common == len(official_lines):
             if apply and title:
-                sync_pair_metadata(store, pair, official, api, title)
+                sync_pair_metadata(store, pair, official, api, title, archived=forced_archived)
                 store.commit()
                 append_session_index(paths.session_index, official.id, title)
                 append_session_index(paths.session_index, api.id, title)
@@ -175,7 +207,7 @@ def sync_pair(paths: CodexPaths, pair: Pair, apply: bool, forced_title: str | No
                 handle.writelines(rewritten)
             now = int(time.time())
             store.update_after_sync(target.id, source, now, now * 1000)
-            sync_pair_metadata(store, pair, official, api, title)
+            sync_pair_metadata(store, pair, official, api, title, archived=forced_archived)
             store.commit()
             append_session_index(paths.session_index, target.id, title or target.title)
             append_session_index(paths.session_index, source.id, title or source.title)
@@ -223,6 +255,49 @@ def copy_thread_to_provider(paths: CodexPaths, source: ThreadRecord, target_prov
         return Pair(name=new_id[:8], official=new_id, api=source.id, api_provider=source.provider, workspace=source.cwd)
     finally:
         store.close()
+
+
+def pair_existing_threads(source: ThreadRecord, target_record: ThreadRecord, source_provider: str, target_provider: str) -> Pair:
+    if source_provider == OFFICIAL_PROVIDER:
+        return Pair(
+            name=source.id[:8],
+            official=source.id,
+            api=target_record.id,
+            api_provider=target_provider,
+            workspace=source.cwd,
+            title=source.title,
+        )
+    return Pair(
+        name=target_record.id[:8],
+        official=target_record.id,
+        api=source.id,
+        api_provider=source.provider,
+        workspace=source.cwd,
+        title=source.title,
+    )
+
+
+def match_existing_target_copies(
+    sources: list[ThreadRecord],
+    target_records: list[ThreadRecord],
+) -> tuple[list[tuple[ThreadRecord, ThreadRecord]], list[ThreadRecord]]:
+    remaining_targets = list(target_records)
+    matched: list[tuple[ThreadRecord, ThreadRecord]] = []
+    unmatched_sources: list[ThreadRecord] = []
+    for source in sources:
+        index = next(
+            (
+                i
+                for i, target in enumerate(remaining_targets)
+                if target.title == source.title and target.cwd == source.cwd
+            ),
+            None,
+        )
+        if index is None:
+            unmatched_sources.append(source)
+            continue
+        matched.append((source, remaining_targets.pop(index)))
+    return matched, unmatched_sources
 
 
 def copy_one(
@@ -480,6 +555,99 @@ def mirror_plan(
         store.close()
 
 
+def infer_mirror_providers(paths: CodexPaths, target: str, api_provider: str | None = None) -> tuple[str, str, str]:
+    current_provider = read_model_provider(paths.config)
+    pairs = load_pairs(paths.pairs_file)
+    pair_providers = sorted({pair.api_provider for pair in pairs if pair.api_provider})
+    inferred_api_provider = api_provider or (current_provider if current_provider and current_provider != OFFICIAL_PROVIDER else None)
+    if not inferred_api_provider and len(pair_providers) == 1:
+        inferred_api_provider = pair_providers[0]
+    if not inferred_api_provider:
+        raise RuntimeError("Cannot infer API provider for mirror mode.")
+
+    source_provider = OFFICIAL_PROVIDER if target == "api" else inferred_api_provider
+    target_provider = inferred_api_provider if target == "api" else OFFICIAL_PROVIDER
+    return inferred_api_provider, source_provider, target_provider
+
+
+def compute_mirror_diff(
+    paths: CodexPaths,
+    target: str,
+    api_provider: str | None = None,
+    include_automation: bool = True,
+    current_workspace_only: bool = False,
+) -> MirrorDiff:
+    _, source_provider, target_provider = infer_mirror_providers(paths, target, api_provider=api_provider)
+    pairs = load_pairs(paths.pairs_file)
+    workspaces = known_workspaces(pairs)
+    source_pair_id = (lambda pair: pair.official) if source_provider == OFFICIAL_PROVIDER else (lambda pair: pair.api)
+    target_pair_id = (lambda pair: pair.api) if target_provider != OFFICIAL_PROVIDER else (lambda pair: pair.official)
+    pairs_by_source_id = {source_pair_id(pair): pair for pair in pairs}
+    pairs_by_target_id = {target_pair_id(pair): pair for pair in pairs}
+    pairs_by_target_id = {target_pair_id(pair): pair for pair in pairs}
+
+    store = ThreadStore(paths.state_db, readonly=True)
+    try:
+        source_visible = store.active_by_provider(source_provider)
+        target_visible = store.active_by_provider(target_provider)
+        if current_workspace_only and workspaces:
+            source_visible = [record for record in source_visible if record.cwd in workspaces]
+            target_visible = [record for record in target_visible if record.cwd in workspaces]
+        if not include_automation:
+            source_visible = [record for record in source_visible if not is_automation_thread(record)]
+            target_visible = [record for record in target_visible if not is_automation_thread(record)]
+        paired_source = [record for record in source_visible if record.id in pairs_by_source_id]
+        missing = [record for record in source_visible if record.id not in pairs_by_source_id]
+        expected_target_ids = {target_pair_id(pairs_by_source_id[record.id]) for record in paired_source}
+        extra = [record for record in target_visible if record.id not in expected_target_ids]
+        source_archived_extras: list[ThreadRecord] = []
+        for record in extra:
+            pair = pairs_by_target_id.get(record.id)
+            if not pair:
+                continue
+            try:
+                source_record = store.get(source_pair_id(pair))
+            except KeyError:
+                continue
+            if source_record.archived:
+                source_archived_extras.append(record)
+        return MirrorDiff(
+            source_provider=source_provider,
+            target_provider=target_provider,
+            source_count=len(source_visible),
+            target_count=len(target_visible),
+            missing_in_target=missing,
+            extra_in_target=extra,
+            paired_source_archived_extras=source_archived_extras,
+            paired_source_count=len(paired_source),
+        )
+    finally:
+        store.close()
+
+
+def report_mirror_diff(diff: MirrorDiff, prune_extras: bool = False) -> list[str]:
+    messages = [
+        f"镜像方向：{provider_label(diff.source_provider)} -> {provider_label(diff.target_provider)}",
+        f"源侧左侧会话：{diff.source_count} 条",
+        f"目标侧左侧会话：{diff.target_count} 条",
+        f"已接入 handoff：{diff.paired_source_count} 条",
+        f"目标侧缺少：{len(diff.missing_in_target)} 条",
+        f"目标侧额外：{len(diff.extra_in_target)} 条" + ("，将归档隐藏" if prune_extras else "，默认保留"),
+    ]
+    if diff.paired_source_archived_extras:
+        messages.append(f"其中源侧已归档的配对会话：{len(diff.paired_source_archived_extras)} 条，将同步归档")
+    for record in diff.missing_in_target[:20]:
+        messages.append(f"  缺少 - {display_record(record)}")
+    if len(diff.missing_in_target) > 20:
+        messages.append(f"  ... 还有 {len(diff.missing_in_target) - 20} 条缺少会话")
+    if prune_extras:
+        for record in diff.extra_in_target[:20]:
+            messages.append(f"  额外 - {display_record(record)}")
+        if len(diff.extra_in_target) > 20:
+            messages.append(f"  ... 还有 {len(diff.extra_in_target) - 20} 条额外会话")
+    return messages
+
+
 def run_mirror(
     paths: CodexPaths,
     target: str,
@@ -490,8 +658,22 @@ def run_mirror(
     include_tests: bool = False,
     current_workspace_only: bool = False,
     selected_ids: set[str] | None = None,
+    prune_extras: bool = False,
+    sync_paired_archive: bool = True,
 ) -> list[str]:
     messages: list[str] = []
+    diff = compute_mirror_diff(
+        paths,
+        target,
+        api_provider=api_provider,
+        include_automation=include_automation,
+        current_workspace_only=current_workspace_only,
+    )
+    messages.extend(report_mirror_diff(diff, prune_extras=prune_extras))
+
+    if not apply:
+        return messages
+
     current_provider = read_model_provider(paths.config)
     pairs = load_pairs(paths.pairs_file)
     pair_providers = sorted({pair.api_provider for pair in pairs if pair.api_provider})
@@ -530,25 +712,14 @@ def run_mirror(
         store.close()
 
     selected_to_copy = source_to_copy
-    messages.append(f"镜像方向：{provider_label(source_provider)} -> {provider_label(target_provider)}")
-    messages.append(f"源侧左侧会话：{len(source_visible)} 条")
-    messages.append(f"已接入 handoff：{len(paired_source)} 条")
-    messages.append(f"将新增接入：{len(selected_to_copy)} / {len(unpaired_source)} 条")
-    messages.append(f"目标侧将归档隐藏多余会话：{len(target_extras)} 条")
-    for record in unpaired_source[:20]:
-        messages.append(f"  - {record.id}  {record.title.replace(chr(10), ' ')[:80]}")
-    if len(unpaired_source) > 20:
-        messages.append(f"  ... 还有 {len(unpaired_source) - 20} 条")
     if selected_ids is not None:
         messages.append(f"本次选择接入：{len(selected_to_copy)} 条")
-
-    if not apply:
-        return messages
 
     backup_root = create_full_backup(paths.home, backup_base)
     messages.append("备份模式=full")
     messages.append(f"备份位置={backup_root}")
     pairs = load_pairs(paths.pairs_file)
+    pairs_by_target_id = {target_pair_id(pair): pair for pair in pairs}
     source_records = {record.id: record for record in source_visible}
     source_titles = {record.id: record.title for record in source_visible}
     expected_target_ids = set()
@@ -558,12 +729,31 @@ def run_mirror(
         if source_id not in source_titles:
             continue
         pair.title = source_titles[source_id]
-        report = sync_pair(paths, pair, apply=True, forced_title=source_titles[source_id])
+        source_record = source_records[source_id]
+        report = sync_pair(
+            paths,
+            pair,
+            apply=True,
+            forced_title=source_titles[source_id],
+            forced_archived=source_record.archived if sync_paired_archive else None,
+        )
         target_id = target_pair_id(pair)
         expected_target_ids.add(target_id)
-        target_source_map[target_id] = source_records[source_id]
+        target_source_map[target_id] = source_record
         messages.append(report_sync_message(report))
-    for record in selected_to_copy:
+
+    existing_matches, records_to_copy = match_existing_target_copies(selected_to_copy, target_extras)
+    for source, target_record in existing_matches:
+        pair = pair_existing_threads(source, target_record, source_provider, target_provider)
+        pair.title_mode = "auto"
+        pairs.append(pair)
+        target_id = target_pair_id(pair)
+        expected_target_ids.add(target_id)
+        target_source_map[target_id] = source
+        pairs_by_target_id[target_id] = pair
+        messages.append(f"已接入已有目标侧副本：{source.id} -> official={pair.official} api={pair.api}")
+
+    for record in records_to_copy:
         pair = copy_thread_to_provider(paths, record, target_provider, apply=True)
         if pair:
             pair.title = record.title
@@ -577,13 +767,37 @@ def run_mirror(
     try:
         for target_id, source in target_source_map.items():
             store.update_from_source(target_id, source, source.title)
-        for record in target_extras:
-            if record.id in expected_target_ids:
-                continue
-            store.update_archived(record.id, True)
-            messages.append(f"已归档隐藏目标侧多余会话：{record.id}  {record.title.replace(chr(10), ' ')[:80]}")
+            if sync_paired_archive:
+                store.update_archived(target_id, source.archived)
+        if prune_extras:
+            for record in target_extras:
+                if record.id in expected_target_ids:
+                    continue
+                store.update_archived(record.id, True)
+                messages.append(f"已归档隐藏目标侧额外会话：{display_record(record)}")
+        elif sync_paired_archive:
+            for record in target_extras:
+                pair = pairs_by_target_id.get(record.id)
+                if not pair:
+                    continue
+                try:
+                    source_record = store.get(source_pair_id(pair))
+                except KeyError:
+                    continue
+                if source_record.archived:
+                    store.update_archived(record.id, True)
+                    messages.append(f"已同步归档源侧已归档的配对会话：{display_record(record)}")
         store.commit()
     finally:
         store.close()
     save_pairs(paths.pairs_file, pairs)
+    after = compute_mirror_diff(
+        paths,
+        target,
+        api_provider=api_provider,
+        include_automation=include_automation,
+        current_workspace_only=current_workspace_only,
+    )
+    messages.append("同步后检查：")
+    messages.extend(report_mirror_diff(after, prune_extras=prune_extras))
     return messages
