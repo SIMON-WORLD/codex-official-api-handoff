@@ -103,11 +103,13 @@ class ThreadStore:
         self.connection.execute(
             """
             update threads
-            set title = ?, updated_at = ?, updated_at_ms = ?, tokens_used = ?, preview = ?
+            set title = ?, created_at = ?, created_at_ms = ?, updated_at = ?, updated_at_ms = ?, tokens_used = ?, preview = ?
             where id = ?
             """,
             (
                 title,
+                source.data.get("created_at"),
+                source.data.get("created_at_ms"),
                 source.data.get("updated_at"),
                 source.data.get("updated_at_ms"),
                 source.data.get("tokens_used"),

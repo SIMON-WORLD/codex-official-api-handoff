@@ -7,7 +7,14 @@ from pathlib import Path
 def load_jsonl(path: Path) -> list[str]:
     if not path.exists():
         raise FileNotFoundError(path)
-    return path.read_text(encoding="utf-8").splitlines()
+    lines = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        lines.append(line)
+    return lines
 
 
 def write_jsonl(path: Path, lines: list[str]) -> None:
@@ -59,8 +66,10 @@ def common_prefix(source_lines: list[str], target_lines: list[str], source_id: s
 def encrypted_count(lines: list[str]) -> int:
     count = 0
     for line in lines:
-        payload = json.loads(line).get("payload")
+        try:
+            payload = json.loads(line).get("payload")
+        except json.JSONDecodeError:
+            continue
         if isinstance(payload, dict) and "encrypted_content" in payload:
             count += 1
     return count
-

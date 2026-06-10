@@ -259,10 +259,6 @@ def copy_thread_to_provider(paths: CodexPaths, source: ThreadRecord, target_prov
         row["id"] = new_id
         row["rollout_path"] = str(destination)
         row["model_provider"] = target_provider
-        row["created_at"] = int(time.time())
-        row["updated_at"] = row["created_at"]
-        row["created_at_ms"] = row["created_at"] * 1000
-        row["updated_at_ms"] = row["updated_at"] * 1000
         copied = ThreadRecord(row)
         store.insert_thread(copied)
         store.commit()
