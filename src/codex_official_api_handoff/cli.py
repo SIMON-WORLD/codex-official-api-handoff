@@ -119,10 +119,10 @@ def main(argv: list[str] | None = None) -> int:
         diff = compute_mirror_diff(paths, args.target)
         for message in report_mirror_diff(diff):
             print(message)
-        if diff.missing_in_target:
-            print("结论：目标侧还缺会话，切换前应先运行 mirror。")
+        if diff.has_problems():
+            print("结论：目标侧左侧列表或已接入会话归档状态仍不一致，切换前应先运行 mirror。")
             return 1
-        print("结论：目标侧不缺会话。")
+        print("结论：目标侧左侧列表一致；已接入会话的归档状态一致。")
         return 0
 
     if args.command == "pair":

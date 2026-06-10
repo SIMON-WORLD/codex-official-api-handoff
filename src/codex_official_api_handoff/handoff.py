@@ -46,10 +46,24 @@ class MirrorDiff:
     target_provider: str
     source_count: int
     target_count: int
+    source_archived_count: int
+    target_archived_count: int
     missing_in_target: list[ThreadRecord]
     extra_in_target: list[ThreadRecord]
     paired_source_archived_extras: list[ThreadRecord]
+    source_active_target_archived: list[tuple[ThreadRecord, ThreadRecord]]
+    source_archived_target_active: list[tuple[ThreadRecord, ThreadRecord]]
+    archived_missing_in_target: list[ThreadRecord]
+    archived_extra_in_target: list[ThreadRecord]
     paired_source_count: int
+
+    def has_problems(self) -> bool:
+        return bool(
+            self.missing_in_target
+            or self.extra_in_target
+            or self.source_active_target_archived
+            or self.source_archived_target_active
+        )
 
 
 def provider_label(provider: str) -> str:
@@ -584,41 +598,83 @@ def compute_mirror_diff(
     target_pair_id = (lambda pair: pair.api) if target_provider != OFFICIAL_PROVIDER else (lambda pair: pair.official)
     pairs_by_source_id = {source_pair_id(pair): pair for pair in pairs}
     pairs_by_target_id = {target_pair_id(pair): pair for pair in pairs}
-    pairs_by_target_id = {target_pair_id(pair): pair for pair in pairs}
 
     store = ThreadStore(paths.state_db, readonly=True)
     try:
-        source_visible = store.active_by_provider(source_provider)
-        target_visible = store.active_by_provider(target_provider)
+        source_all = store.by_provider(source_provider)
+        target_all = store.by_provider(target_provider)
         if current_workspace_only and workspaces:
-            source_visible = [record for record in source_visible if record.cwd in workspaces]
-            target_visible = [record for record in target_visible if record.cwd in workspaces]
+            source_all = [record for record in source_all if record.cwd in workspaces]
+            target_all = [record for record in target_all if record.cwd in workspaces]
         if not include_automation:
-            source_visible = [record for record in source_visible if not is_automation_thread(record)]
-            target_visible = [record for record in target_visible if not is_automation_thread(record)]
+            source_all = [record for record in source_all if not is_automation_thread(record)]
+            target_all = [record for record in target_all if not is_automation_thread(record)]
+        source_visible = [record for record in source_all if not record.archived]
+        target_visible = [record for record in target_all if not record.archived]
+        source_archived = [record for record in source_all if record.archived]
+        target_archived = [record for record in target_all if record.archived]
+        source_by_id = {record.id: record for record in source_all}
+        target_by_id = {record.id: record for record in target_all}
+        target_visible_ids = {record.id for record in target_visible}
+        target_archived_ids = {record.id for record in target_archived}
         paired_source = [record for record in source_visible if record.id in pairs_by_source_id]
-        missing = [record for record in source_visible if record.id not in pairs_by_source_id]
+        missing = [
+            record
+            for record in source_visible
+            if record.id not in pairs_by_source_id or target_pair_id(pairs_by_source_id[record.id]) not in target_visible_ids
+        ]
         expected_target_ids = {target_pair_id(pairs_by_source_id[record.id]) for record in paired_source}
         extra = [record for record in target_visible if record.id not in expected_target_ids]
         source_archived_extras: list[ThreadRecord] = []
+        source_active_target_archived: list[tuple[ThreadRecord, ThreadRecord]] = []
+        source_archived_target_active: list[tuple[ThreadRecord, ThreadRecord]] = []
+        archived_missing: list[ThreadRecord] = []
+        archived_extra: list[ThreadRecord] = []
         for record in extra:
             pair = pairs_by_target_id.get(record.id)
             if not pair:
                 continue
-            try:
-                source_record = store.get(source_pair_id(pair))
-            except KeyError:
+            source_record = source_by_id.get(source_pair_id(pair))
+            if not source_record:
                 continue
             if source_record.archived:
                 source_archived_extras.append(record)
+        for pair in pairs:
+            source_record = source_by_id.get(source_pair_id(pair))
+            target_record = target_by_id.get(target_pair_id(pair))
+            if not source_record or not target_record:
+                continue
+            if not source_record.archived and target_record.archived:
+                source_active_target_archived.append((source_record, target_record))
+            elif source_record.archived and not target_record.archived:
+                source_archived_target_active.append((source_record, target_record))
+        for record in source_archived:
+            pair = pairs_by_source_id.get(record.id)
+            if not pair:
+                archived_missing.append(record)
+                continue
+            if target_pair_id(pair) not in target_archived_ids:
+                archived_missing.append(record)
+        source_archived_target_ids = {
+            target_pair_id(pairs_by_source_id[record.id])
+            for record in source_archived
+            if record.id in pairs_by_source_id
+        }
+        archived_extra = [record for record in target_archived if record.id not in source_archived_target_ids]
         return MirrorDiff(
             source_provider=source_provider,
             target_provider=target_provider,
             source_count=len(source_visible),
             target_count=len(target_visible),
+            source_archived_count=len(source_archived),
+            target_archived_count=len(target_archived),
             missing_in_target=missing,
             extra_in_target=extra,
             paired_source_archived_extras=source_archived_extras,
+            source_active_target_archived=source_active_target_archived,
+            source_archived_target_active=source_archived_target_active,
+            archived_missing_in_target=archived_missing,
+            archived_extra_in_target=archived_extra,
             paired_source_count=len(paired_source),
         )
     finally:
@@ -630,12 +686,19 @@ def report_mirror_diff(diff: MirrorDiff, prune_extras: bool = False) -> list[str
         f"镜像方向：{provider_label(diff.source_provider)} -> {provider_label(diff.target_provider)}",
         f"源侧左侧会话：{diff.source_count} 条",
         f"目标侧左侧会话：{diff.target_count} 条",
+        f"源侧归档会话：{diff.source_archived_count} 条",
+        f"目标侧归档会话：{diff.target_archived_count} 条",
         f"已接入 handoff：{diff.paired_source_count} 条",
         f"目标侧缺少：{len(diff.missing_in_target)} 条",
         f"目标侧额外：{len(diff.extra_in_target)} 条" + ("，将归档隐藏" if prune_extras else "，默认保留"),
+        f"已接入会话归档不一致：{len(diff.source_active_target_archived) + len(diff.source_archived_target_active)} 条",
     ]
     if diff.paired_source_archived_extras:
         messages.append(f"其中源侧已归档的配对会话：{len(diff.paired_source_archived_extras)} 条，将同步归档")
+    if diff.archived_missing_in_target:
+        messages.append(f"源侧有 {len(diff.archived_missing_in_target)} 条归档会话未在目标侧归档列表中出现；未接入旧归档默认只提示，不自动复制。")
+    if diff.archived_extra_in_target:
+        messages.append(f"目标侧有 {len(diff.archived_extra_in_target)} 条额外归档会话；默认保留，不影响左侧切换。")
     for record in diff.missing_in_target[:20]:
         messages.append(f"  缺少 - {display_record(record)}")
     if len(diff.missing_in_target) > 20:
@@ -645,6 +708,10 @@ def report_mirror_diff(diff: MirrorDiff, prune_extras: bool = False) -> list[str
             messages.append(f"  额外 - {display_record(record)}")
         if len(diff.extra_in_target) > 20:
             messages.append(f"  ... 还有 {len(diff.extra_in_target) - 20} 条额外会话")
+    for source, target in diff.source_active_target_archived[:20]:
+        messages.append(f"  归档不一致 - 源侧仍在左侧，目标侧已归档：{display_record(source)} -> {target.id}")
+    for source, target in diff.source_archived_target_active[:20]:
+        messages.append(f"  归档不一致 - 源侧已归档，目标侧仍在左侧：{display_record(source)} -> {target.id}")
     return messages
 
 
@@ -692,14 +759,16 @@ def run_mirror(
 
     store = ThreadStore(paths.state_db, readonly=True)
     try:
-        source_visible = store.active_by_provider(source_provider)
-        target_visible = store.active_by_provider(target_provider)
+        source_all = store.by_provider(source_provider)
+        target_all = store.by_provider(target_provider)
         if current_workspace_only and workspaces:
-            source_visible = [record for record in source_visible if record.cwd in workspaces]
-            target_visible = [record for record in target_visible if record.cwd in workspaces]
+            source_all = [record for record in source_all if record.cwd in workspaces]
+            target_all = [record for record in target_all if record.cwd in workspaces]
         if not include_automation:
-            source_visible = [record for record in source_visible if not is_automation_thread(record)]
-            target_visible = [record for record in target_visible if not is_automation_thread(record)]
+            source_all = [record for record in source_all if not is_automation_thread(record)]
+            target_all = [record for record in target_all if not is_automation_thread(record)]
+        source_visible = [record for record in source_all if not record.archived]
+        target_visible = [record for record in target_all if not record.archived]
         paired_source = [record for record in source_visible if record.id in pairs_by_source_id]
         unpaired_source = [record for record in source_visible if record.id not in pairs_by_source_id]
         if selected_ids is not None:
@@ -720,8 +789,8 @@ def run_mirror(
     messages.append(f"备份位置={backup_root}")
     pairs = load_pairs(paths.pairs_file)
     pairs_by_target_id = {target_pair_id(pair): pair for pair in pairs}
-    source_records = {record.id: record for record in source_visible}
-    source_titles = {record.id: record.title for record in source_visible}
+    source_records = {record.id: record for record in source_all}
+    source_titles = {record.id: record.title for record in source_all}
     expected_target_ids = set()
     target_source_map: dict[str, ThreadRecord] = {}
     for pair in pairs:

@@ -67,6 +67,13 @@ class ThreadStore:
         )
         return [ThreadRecord(dict(row)) for row in rows]
 
+    def by_provider(self, provider: str) -> list[ThreadRecord]:
+        rows = self.connection.execute(
+            "select * from threads where model_provider = ? order by updated_at desc",
+            (provider,),
+        )
+        return [ThreadRecord(dict(row)) for row in rows]
+
     def insert_thread(self, record: ThreadRecord) -> None:
         columns = self.columns()
         placeholders = ",".join("?" for _ in columns)

@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from codex_official_api_handoff.handoff import preferred_title, sync_pair_metadata
+from codex_official_api_handoff.handoff import MirrorDiff, preferred_title, sync_pair_metadata
 from codex_official_api_handoff.pairs import Pair
 from codex_official_api_handoff.rollout import common_prefix
 from codex_official_api_handoff.short_cli import parse_selection
@@ -80,6 +80,49 @@ class SyncLogicTests(unittest.TestCase):
     def test_selection_parser_supports_ranges_and_all(self):
         self.assertEqual(parse_selection("1,3-4", 5), [1, 3, 4])
         self.assertEqual(parse_selection("all", 3), [1, 2, 3])
+
+    def test_mirror_diff_flags_paired_archive_mismatch(self):
+        source = ThreadRecord({"id": "official", "model_provider": "openai", "title": "same", "rollout_path": "x", "archived": 1})
+        target = ThreadRecord({"id": "api", "model_provider": "custom", "title": "same", "rollout_path": "y", "archived": 0})
+        diff = MirrorDiff(
+            source_provider="openai",
+            target_provider="custom",
+            source_count=0,
+            target_count=1,
+            source_archived_count=1,
+            target_archived_count=0,
+            missing_in_target=[],
+            extra_in_target=[],
+            paired_source_archived_extras=[target],
+            source_active_target_archived=[],
+            source_archived_target_active=[(source, target)],
+            archived_missing_in_target=[source],
+            archived_extra_in_target=[],
+            paired_source_count=0,
+        )
+
+        self.assertTrue(diff.has_problems())
+
+    def test_mirror_diff_ignores_legacy_unpaired_archived_extras(self):
+        legacy = ThreadRecord({"id": "legacy", "model_provider": "openai", "title": "old", "rollout_path": "x", "archived": 1})
+        diff = MirrorDiff(
+            source_provider="custom",
+            target_provider="openai",
+            source_count=2,
+            target_count=2,
+            source_archived_count=0,
+            target_archived_count=1,
+            missing_in_target=[],
+            extra_in_target=[],
+            paired_source_archived_extras=[],
+            source_active_target_archived=[],
+            source_archived_target_active=[],
+            archived_missing_in_target=[],
+            archived_extra_in_target=[legacy],
+            paired_source_count=2,
+        )
+
+        self.assertFalse(diff.has_problems())
 
 
 if __name__ == "__main__":
