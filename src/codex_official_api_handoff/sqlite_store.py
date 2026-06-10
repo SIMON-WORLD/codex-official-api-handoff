@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -124,10 +125,17 @@ class ThreadStore:
     def update_archived(self, thread_id: str, archived: bool) -> None:
         if "archived" not in self.columns():
             return
-        self.connection.execute(
-            "update threads set archived = ? where id = ?",
-            (1 if archived else 0, thread_id),
-        )
+        columns = self.columns()
+        if "archived_at" in columns:
+            self.connection.execute(
+                "update threads set archived = ?, archived_at = ? where id = ?",
+                (1 if archived else 0, int(time.time()) if archived else None, thread_id),
+            )
+        else:
+            self.connection.execute(
+                "update threads set archived = ? where id = ?",
+                (1 if archived else 0, thread_id),
+            )
 
     def commit(self) -> None:
         self.connection.commit()
