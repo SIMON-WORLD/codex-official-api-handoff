@@ -139,13 +139,12 @@ def run_mirror_short(paths: CodexPaths, target: str, backup_base: Path, yes: boo
     print("先进行预览，不会写入文件。")
     print()
 
-    dry_messages = run_mirror(paths, target, apply=False, backup_base=backup_base)
+    dry_messages = run_mirror(paths, target, apply=False, backup_base=backup_base, prune_extras=True)
     for message in dry_messages:
         print(message)
 
     print()
-    print("确认后会补齐目标侧缺少的会话，并同步已接入会话的内容、标题和排序。")
-    print("默认不会归档或隐藏目标侧额外会话。")
+    print("确认后会让目标侧左侧列表尽量变成和源侧一致：补齐缺少会话，同步内容、标题、排序，并归档隐藏目标侧额外会话。")
     if not yes and not ask_yes_no("确认执行镜像并使用 full 完整备份吗？"):
         print("已取消。")
         return 0
@@ -156,6 +155,7 @@ def run_mirror_short(paths: CodexPaths, target: str, backup_base: Path, yes: boo
         target,
         apply=True,
         backup_base=backup_base,
+        prune_extras=True,
     )
     for message in apply_messages:
         print(message)

@@ -243,7 +243,10 @@ def copy_thread_to_provider(paths: CodexPaths, source: ThreadRecord, target_prov
         destination = destination_dir / f"rollout-{now:%Y-%m-%dT%H-%M-%S}-{new_id}.jsonl"
         lines = []
         for line in load_jsonl(source.rollout_path):
-            item = json.loads(line)
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
             if item.get("type") == "session_meta":
                 payload = item.setdefault("payload", {})
                 payload["id"] = new_id
