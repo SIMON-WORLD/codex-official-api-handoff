@@ -24,6 +24,9 @@ $localFullCmd = Join-Path $localBin "codex-official-api-handoff.cmd"
 
 @"
 @echo off
+chcp 65001 >nul
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
 set "PYTHONPATH=$src;%PYTHONPATH%"
 "$Python" -m codex_official_api_handoff.short_cli %*
 "@ | Set-Content -LiteralPath $shortCmd -Encoding ascii
@@ -31,6 +34,9 @@ Copy-Item -LiteralPath $shortCmd -Destination $localShortCmd -Force
 
 @"
 @echo off
+chcp 65001 >nul
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
 set "PYTHONPATH=$src;%PYTHONPATH%"
 "$Python" -m codex_official_api_handoff %*
 "@ | Set-Content -LiteralPath $fullCmd -Encoding ascii
