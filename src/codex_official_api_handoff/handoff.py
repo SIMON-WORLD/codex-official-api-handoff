@@ -65,9 +65,34 @@ class MirrorDiff:
             or self.source_archived_target_active
         )
 
+    def has_archive_mismatch(self) -> bool:
+        return bool(self.source_active_target_archived or self.source_archived_target_active)
+
+    def is_pending_handoff(self) -> bool:
+        return bool(self.missing_in_target) and not self.extra_in_target and not self.has_archive_mismatch()
+
+    def is_target_ahead_only(self) -> bool:
+        return bool(self.extra_in_target) and not self.missing_in_target and not self.has_archive_mismatch()
+
 
 def provider_label(provider: str) -> str:
     return "官方" if provider == OFFICIAL_PROVIDER else "API"
+
+
+GENERIC_TITLES = {"你好", "新聊天", "New chat", "Untitled"}
+
+
+def is_generic_title(title: str | None) -> bool:
+    if not title:
+        return True
+    normalized = title.strip()
+    return normalized in GENERIC_TITLES or len(normalized) <= 2
+
+
+def mirror_title(source_title: str, target_title: str | None) -> str:
+    if is_generic_title(source_title) and target_title and not is_generic_title(target_title):
+        return target_title
+    return source_title
 
 
 def direction_label(direction: str) -> str:
@@ -114,6 +139,60 @@ def append_session_index(path: Path, thread_id: str, title: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def active_rollout_path(paths: CodexPaths, rollout_path: Path) -> Path:
+    name = rollout_path.name
+    if name.startswith("rollout-") and len(name) >= 18:
+        date = name[len("rollout-") : len("rollout-") + 10]
+        if len(date) == 10 and date[4] == "-" and date[7] == "-":
+            year, month, day = date.split("-")
+            return paths.sessions / year / month / day / name
+    return paths.sessions / name
+
+
+def archived_rollout_path(paths: CodexPaths, rollout_path: Path) -> Path:
+    return paths.archived_sessions / rollout_path.name
+
+
+def existing_rollout_path(paths: CodexPaths, record: ThreadRecord) -> Path:
+    rollout_path = record.rollout_path
+    if rollout_path.exists():
+        return rollout_path
+    archived_path = archived_rollout_path(paths, rollout_path)
+    if archived_path.exists():
+        return archived_path
+    active_path = active_rollout_path(paths, rollout_path)
+    if active_path.exists():
+        return active_path
+    return rollout_path
+
+
+def repair_rollout_path_if_needed(store: ThreadStore, thread_id: str, current: Path, actual: Path) -> None:
+    if actual != current:
+        store.update_rollout_path(thread_id, actual)
+
+
+def relocate_rollout_file(paths: CodexPaths, record: ThreadRecord, archived: bool) -> Path:
+    current = existing_rollout_path(paths, record)
+    desired = archived_rollout_path(paths, current) if archived else active_rollout_path(paths, current)
+    if current == desired:
+        return desired
+    if desired.exists():
+        return desired
+    if not current.exists():
+        return current
+    desired.parent.mkdir(parents=True, exist_ok=True)
+    current.replace(desired)
+    return desired
+
+
+def sync_archive_state(paths: CodexPaths, store: ThreadStore, thread_id: str, archived: bool) -> None:
+    record = store.get(thread_id)
+    rollout_path = relocate_rollout_file(paths, record, archived)
+    if rollout_path != record.rollout_path:
+        store.update_rollout_path(thread_id, rollout_path)
+    store.update_archived(thread_id, archived)
 
 
 def preferred_title(pair: Pair, official: ThreadRecord, api: ThreadRecord, forced_title: str | None = None) -> str:
@@ -180,8 +259,10 @@ def sync_pair(
         official = store.get(pair.official)
         api = store.get(pair.api)
         title = preferred_title(pair, official, api, forced_title=forced_title)
-        official_lines = load_jsonl(official.rollout_path)
-        api_lines = load_jsonl(api.rollout_path)
+        official_path = existing_rollout_path(paths, official)
+        api_path = existing_rollout_path(paths, api)
+        official_lines = load_jsonl(official_path)
+        api_lines = load_jsonl(api_path)
 
         api_common = common_prefix(api_lines, official_lines, api.id, official.id, official.provider)
         official_common = common_prefix(official_lines, api_lines, official.id, api.id, api.provider)
@@ -198,6 +279,8 @@ def sync_pair(
             direction = "official-to-api"
         elif len(api_lines) == len(official_lines) and api_common == len(official_lines):
             if apply and title:
+                repair_rollout_path_if_needed(store, official.id, official.rollout_path, official_path)
+                repair_rollout_path_if_needed(store, api.id, api.rollout_path, api_path)
                 sync_pair_metadata(store, pair, official, api, title, archived=forced_archived)
                 store.commit()
                 append_session_index(paths.session_index, official.id, title)
@@ -216,11 +299,17 @@ def sync_pair(
             if line is not None
         ]
 
-        if apply and rewritten:
-            with target.rollout_path.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.writelines(rewritten)
+        if apply:
+            if rewritten:
+                target_path = official_path if target.id == official.id else api_path
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with target_path.open("a", encoding="utf-8", newline="\n") as handle:
+                    handle.writelines(rewritten)
             now = int(time.time())
-            store.update_after_sync(target.id, source, now, now * 1000)
+            repair_rollout_path_if_needed(store, official.id, official.rollout_path, official_path)
+            repair_rollout_path_if_needed(store, api.id, api.rollout_path, api_path)
+            if rewritten:
+                store.update_after_sync(target.id, source, now, now * 1000)
             sync_pair_metadata(store, pair, official, api, title, archived=forced_archived)
             store.commit()
             append_session_index(paths.session_index, target.id, title or target.title)
@@ -714,6 +803,29 @@ def report_mirror_diff(diff: MirrorDiff, prune_extras: bool = False) -> list[str
     return messages
 
 
+def check_conclusion(diff: MirrorDiff, target: str) -> tuple[str, int]:
+    target_command = f"codex-handoff {target}"
+    if not diff.has_problems():
+        return "结论：目标侧左侧列表一致；已接入会话的归档状态一致。", 0
+    if diff.is_pending_handoff():
+        return (
+            "结论：这是正常的待交接状态。源侧有新的左侧会话或新内容还没带到目标侧；"
+            f"切换前运行 `{target_command}` 即可。",
+            1,
+        )
+    if diff.is_target_ahead_only():
+        return (
+            "结论：目标侧当前比源侧多出会话。若你刚在目标侧继续聊天，这是正常现象；"
+            f"若准备切换到目标侧，请先确认方向是否正确，必要时运行 `{target_command}`。",
+            1,
+        )
+    return (
+        "结论：目标侧左侧列表或已接入会话归档状态仍不一致；"
+        f"切换前应先运行 `{target_command}`。",
+        1,
+    )
+
+
 def run_mirror(
     paths: CodexPaths,
     target: str,
@@ -726,6 +838,7 @@ def run_mirror(
     selected_ids: set[str] | None = None,
     prune_extras: bool = False,
     sync_paired_archive: bool = True,
+    converge_visible_union: bool = True,
 ) -> list[str]:
     messages: list[str] = []
     diff = compute_mirror_diff(
@@ -789,25 +902,31 @@ def run_mirror(
     pairs = load_pairs(paths.pairs_file)
     pairs_by_target_id = {target_pair_id(pair): pair for pair in pairs}
     source_records = {record.id: record for record in source_all}
+    target_records = {record.id: record for record in target_all}
     source_titles = {record.id: record.title for record in source_all}
     expected_target_ids = set()
     target_source_map: dict[str, ThreadRecord] = {}
+    target_title_map: dict[str, str] = {}
     for pair in pairs:
         source_id = source_pair_id(pair)
         if source_id not in source_titles:
             continue
         pair.title = source_titles[source_id]
         source_record = source_records[source_id]
+        target_id = target_pair_id(pair)
+        target_record = target_records.get(target_id)
+        title = mirror_title(source_titles[source_id], target_record.title if target_record else None)
+        pair.title = title
         report = sync_pair(
             paths,
             pair,
             apply=True,
-            forced_title=source_titles[source_id],
+            forced_title=title,
             forced_archived=source_record.archived if sync_paired_archive else None,
         )
-        target_id = target_pair_id(pair)
         expected_target_ids.add(target_id)
         target_source_map[target_id] = source_record
+        target_title_map[target_id] = title
         messages.append(report_sync_message(report))
 
     existing_matches, records_to_copy = match_existing_target_copies(selected_to_copy, target_extras)
@@ -818,6 +937,7 @@ def run_mirror(
         target_id = target_pair_id(pair)
         expected_target_ids.add(target_id)
         target_source_map[target_id] = source
+        target_title_map[target_id] = source.title
         pairs_by_target_id[target_id] = pair
         messages.append(f"已接入已有目标侧副本：{source.id} -> official={pair.official} api={pair.api}")
 
@@ -830,18 +950,41 @@ def run_mirror(
             target_id = target_pair_id(pair)
             expected_target_ids.add(target_id)
             target_source_map[target_id] = record
+            target_title_map[target_id] = record.title
             messages.append(f"已接入：{record.id} -> official={pair.official} api={pair.api}")
+    if converge_visible_union and not prune_extras:
+        pairs_by_known_id = paired_ids(pairs)
+        reverse_records = [record for record in target_extras if record.id not in pairs_by_known_id]
+        for record in reverse_records:
+            pair = copy_thread_to_provider(paths, record, source_provider, apply=True)
+            if pair:
+                pair.title = record.title
+                pair.title_mode = "auto"
+                pairs.append(pair)
+                source_id = source_pair_id(pair)
+                target_id = target_pair_id(pair)
+                expected_target_ids.add(target_id)
+                pairs_by_target_id[target_id] = pair
+                messages.append(f"已反向接入目标侧新增会话：{record.id} -> official={pair.official} api={pair.api}")
+                store = ThreadStore(paths.state_db)
+                try:
+                    store.update_from_source(source_id, record, record.title)
+                    if sync_paired_archive:
+                        sync_archive_state(paths, store, source_id, record.archived)
+                    store.commit()
+                finally:
+                    store.close()
     store = ThreadStore(paths.state_db)
     try:
         for target_id, source in target_source_map.items():
-            store.update_from_source(target_id, source, source.title)
+            store.update_from_source(target_id, source, target_title_map.get(target_id, source.title))
             if sync_paired_archive:
-                store.update_archived(target_id, source.archived)
+                sync_archive_state(paths, store, target_id, source.archived)
         if prune_extras:
             for record in target_extras:
                 if record.id in expected_target_ids:
                     continue
-                store.update_archived(record.id, True)
+                sync_archive_state(paths, store, record.id, True)
                 messages.append(f"已归档隐藏目标侧额外会话：{display_record(record)}")
         elif sync_paired_archive:
             for record in target_extras:
@@ -853,7 +996,7 @@ def run_mirror(
                 except KeyError:
                     continue
                 if source_record.archived:
-                    store.update_archived(record.id, True)
+                    sync_archive_state(paths, store, record.id, True)
                     messages.append(f"已同步归档源侧已归档的配对会话：{display_record(record)}")
         store.commit()
     finally:

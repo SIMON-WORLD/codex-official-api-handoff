@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 
 from .config import read_model_provider
-from .handoff import compute_mirror_diff, copy_one, refresh_session_index, report_mirror_diff, run_to, set_pair_title
+from .handoff import check_conclusion, compute_mirror_diff, copy_one, refresh_session_index, report_mirror_diff, run_to, set_pair_title
 from .pairs import Pair, load_pairs, pair_names, save_pairs
 from .paths import CodexPaths, default_codex_home
 from .sqlite_store import ThreadStore
@@ -119,11 +119,9 @@ def main(argv: list[str] | None = None) -> int:
         diff = compute_mirror_diff(paths, args.target)
         for message in report_mirror_diff(diff):
             print(message)
-        if diff.has_problems():
-            print("结论：目标侧左侧列表或已接入会话归档状态仍不一致，切换前应先运行 mirror。")
-            return 1
-        print("结论：目标侧左侧列表一致；已接入会话的归档状态一致。")
-        return 0
+        conclusion, exit_code = check_conclusion(diff, args.target)
+        print(conclusion)
+        return exit_code
 
     if args.command == "pair":
         return run_pair(paths, args)

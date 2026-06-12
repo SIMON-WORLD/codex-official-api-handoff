@@ -124,6 +124,12 @@ class ThreadStore:
             (title, thread_id),
         )
 
+    def update_rollout_path(self, thread_id: str, rollout_path: Path) -> None:
+        self.connection.execute(
+            "update threads set rollout_path = ? where id = ?",
+            (str(rollout_path), thread_id),
+        )
+
     def update_archived(self, thread_id: str, archived: bool) -> None:
         if "archived" not in self.columns():
             return

@@ -1,8 +1,18 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from codex_official_api_handoff.handoff import MirrorDiff, preferred_title, sync_pair_metadata
+from codex_official_api_handoff.handoff import (
+    MirrorDiff,
+    check_conclusion,
+    mirror_title,
+    relocate_rollout_file,
+    preferred_title,
+    sync_pair_metadata,
+)
 from codex_official_api_handoff.pairs import Pair
+from codex_official_api_handoff.paths import CodexPaths
 from codex_official_api_handoff.rollout import common_prefix
 from codex_official_api_handoff.short_cli import parse_selection
 from codex_official_api_handoff.sqlite_store import ThreadRecord
@@ -51,6 +61,24 @@ class SyncLogicTests(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             preferred_title(pair, official, api)
+
+    def test_mirror_title_does_not_overwrite_manual_title_with_generic_title(self):
+        self.assertEqual(mirror_title("你好", "codex 官方<-> API 会话交接 开发"), "codex 官方<-> API 会话交接 开发")
+        self.assertEqual(mirror_title("新的人工标题", "codex 官方<-> API 会话交接 开发"), "新的人工标题")
+
+    def test_relocate_rollout_file_moves_archived_thread_out_of_sessions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            source = home / "sessions" / "2026" / "06" / "12" / "rollout-2026-06-12T00-00-00-thread.jsonl"
+            source.parent.mkdir(parents=True)
+            source.write_text("x", encoding="utf-8")
+            record = ThreadRecord({"id": "thread", "model_provider": "custom", "title": "t", "rollout_path": str(source)})
+
+            moved = relocate_rollout_file(CodexPaths(home), record, archived=True)
+
+            self.assertEqual(moved, home / "archived_sessions" / source.name)
+            self.assertTrue(moved.exists())
+            self.assertFalse(source.exists())
 
     def test_archive_sync_prefers_archived_even_when_older(self):
         class Store:
@@ -123,6 +151,55 @@ class SyncLogicTests(unittest.TestCase):
         )
 
         self.assertFalse(diff.has_problems())
+
+    def test_check_conclusion_names_pending_handoff(self):
+        missing = ThreadRecord({"id": "new", "model_provider": "custom", "title": "new work", "rollout_path": "x"})
+        diff = MirrorDiff(
+            source_provider="custom",
+            target_provider="openai",
+            source_count=1,
+            target_count=0,
+            source_archived_count=0,
+            target_archived_count=0,
+            missing_in_target=[missing],
+            extra_in_target=[],
+            paired_source_archived_extras=[],
+            source_active_target_archived=[],
+            source_archived_target_active=[],
+            archived_missing_in_target=[],
+            archived_extra_in_target=[],
+            paired_source_count=0,
+        )
+
+        message, code = check_conclusion(diff, "official")
+
+        self.assertEqual(code, 1)
+        self.assertIn("正常的待交接状态", message)
+        self.assertIn("codex-handoff official", message)
+
+    def test_check_conclusion_names_target_ahead(self):
+        extra = ThreadRecord({"id": "extra", "model_provider": "custom", "title": "extra", "rollout_path": "x"})
+        diff = MirrorDiff(
+            source_provider="openai",
+            target_provider="custom",
+            source_count=0,
+            target_count=1,
+            source_archived_count=0,
+            target_archived_count=0,
+            missing_in_target=[],
+            extra_in_target=[extra],
+            paired_source_archived_extras=[],
+            source_active_target_archived=[],
+            source_archived_target_active=[],
+            archived_missing_in_target=[],
+            archived_extra_in_target=[],
+            paired_source_count=0,
+        )
+
+        message, code = check_conclusion(diff, "api")
+
+        self.assertEqual(code, 1)
+        self.assertIn("目标侧当前比源侧多出会话", message)
 
 
 if __name__ == "__main__":

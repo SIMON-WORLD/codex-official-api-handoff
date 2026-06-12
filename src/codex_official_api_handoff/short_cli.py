@@ -163,9 +163,18 @@ def run_mirror_short(paths: CodexPaths, target: str, backup_base: Path, yes: boo
     return 0
 
 
+def run_daily_handoff(paths: CodexPaths, target: str, backup_base: Path, yes: bool = False) -> int:
+    target_label = "API" if target == "api" else "官方账号"
+    print(f"准备切换到：{target_label}")
+    print("这一步会先把当前侧的左侧会话列表、标题、归档状态和已接入会话内容镜像到目标侧。")
+    print("执行完成后，再去 cc-switch 切换账号/API。")
+    print()
+    return run_mirror_short(paths, target, backup_base, yes=yes)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="codex-handoff")
-    parser.add_argument("target", choices=["api", "official", "connect", "mirror"], help="要切换到 API、官方账号，接入更多会话，或镜像左侧列表。")
+    parser.add_argument("target", choices=["api", "official", "connect", "mirror", "sync"], help="要切换到 API、官方账号，接入更多会话，或镜像左侧列表。")
     parser.add_argument("connect_target", nargs="?", choices=["api", "official"], help="connect 时要接入到哪里。")
     parser.add_argument("--codex-home", type=Path, default=default_codex_home())
     parser.add_argument("--backup-base", type=Path, default=Path(r"D:\codex-backups\codex-official-api-handoff"))
@@ -184,12 +193,25 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("mirror 需要指定 api 或 official")
         return run_mirror_short(paths, args.connect_target, args.backup_base, yes=args.yes)
 
-    target_label = "API" if args.target == "api" else "官方账号"
+    if args.target in {"api", "official"}:
+        return run_daily_handoff(paths, args.target, args.backup_base, yes=args.yes)
+
+    if args.target == "sync":
+        if not args.connect_target:
+            parser.error("sync 需要指定 api 或 official")
+        target_label = "API" if args.connect_target == "api" else "官方账号"
+        print("sync 是旧式单条主线同步入口；日常切换推荐直接使用 codex-handoff api / official。")
+        print()
+        target = args.connect_target
+    else:
+        target = args.target
+        target_label = "API" if target == "api" else "官方账号"
+
     print(f"准备交接到：{target_label}")
     print("先进行预览，不会写入文件。")
     print()
 
-    dry_messages = run_to(paths, args.target, apply=False, api_provider=None, backup_base=args.backup_base)
+    dry_messages = run_to(paths, target, apply=False, api_provider=None, backup_base=args.backup_base)
     for message in dry_messages:
         print(message)
 
@@ -205,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
     print("开始执行...")
     apply_messages = run_to(
         paths,
-        args.target,
+        target,
         apply=True,
         api_provider=None,
         backup_base=args.backup_base,

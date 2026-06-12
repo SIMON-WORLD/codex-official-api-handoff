@@ -1,151 +1,131 @@
 # codex-official-api-handoff
 
-`codex-official-api-handoff` 是一个保守的本地工具，用于在 Codex Desktop 的官方 OpenAI 登录模式和 cc-switch/custom API 模式之间交接会话，让同一个任务尽量沿一条主线继续。
+`codex-official-api-handoff` 是一个本地工具，用来在 Codex Desktop 的官方 OpenAI 登录模式和 cc-switch/API 模式之间交接会话。
 
-## 设计目标
+它的目标很简单：
+
+> 官方账号左侧看到什么，切到 API 后也尽量看到什么；API 里继续聊、重命名、归档后，切回官方账号也能接上。
+
+## 它不会做什么
 
 - 不修改 `auth.json`。
-- 不覆盖 Codex 内置的 `openai` provider。
-- 不接管或破坏 cc-switch 的 `config.toml` 配置。
-- 只同步线性会话历史；如果 official/API 两边都新增了不同内容，会停止并提示冲突。
-- 跨 provider 同步时会忽略或过滤 `encrypted_content`，避免把 provider 绑定的加密片段带到另一侧。
-- 每次 `--apply` 写入前都会完整备份 `.codex`。
+- 不接管 cc-switch 的登录和 provider 配置。
+- 不覆盖 Codex 官方登录态。
+- 不删除会话。
+- 不绕过官方额度限制。
+- 不把 provider 绑定的 `encrypted_content` 强行复制到另一侧。
 
-## 日常命令
+## 安装
 
-首次安装本机短命令：
+进入项目目录，运行安装脚本：
 
 ```powershell
 cd "E:\OneDrive\Develop\codex-official-api-handoff"
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-推荐日常使用短命令：
+安装后会得到两个命令：
+
+```powershell
+codex-handoff
+codex-official-api-handoff
+```
+
+普通用户日常只需要用 `codex-handoff`。
+
+如果 PowerShell 提示“无法识别 codex-handoff”，可以先使用项目本地命令：
+
+```powershell
+.\bin\codex-handoff.cmd api
+.\bin\codex-handoff.cmd official
+```
+
+也可以把安装脚本输出的 Python `Scripts` 目录加入系统 PATH。
+
+## 日常切换
+
+准备从官方账号切到 API：
 
 ```powershell
 codex-handoff api
-codex-handoff official
-codex-handoff connect api
-codex-handoff connect official
-codex-handoff mirror api
-codex-handoff mirror official
 ```
 
-它会先用中文显示预览报告，不会立即写入；确认后才会执行同步并备份。
+看到完成提示后，再去 cc-switch 切到 API。
 
-日常切换规则：
+准备从 API 切回官方账号：
+
+```powershell
+codex-handoff official
+```
+
+如果还没有配置 PATH，也可以在项目目录下运行：
+
+```powershell
+.\bin\codex-handoff.cmd api
+.\bin\codex-handoff.cmd official
+```
+
+看到完成提示后，再去 cc-switch 切到官方账号。
+
+这两个命令会先预览，再询问确认。确认后会：
+
+- 备份 `.codex`；
+- 同步已接入会话的内容；
+- 同步左侧会话列表；
+- 同步会话标题；
+- 同步归档状态；
+- 把归档会话的 JSONL 文件移动到 Codex Desktop 期望的位置；
+- 修复 SQLite 中残留的旧 JSONL 路径。
+
+## 检查状态
+
+检查“切到 API 前是否已经准备好”：
+
+```powershell
+codex-official-api-handoff check api
+```
+
+检查“切到官方账号前是否已经准备好”：
+
+```powershell
+codex-official-api-handoff check official
+```
+
+常见结论：
 
 ```text
-准备切到 API      -> 先运行 codex-handoff api
-准备切到官方账号 -> 先运行 codex-handoff official
+结论：目标侧左侧列表一致；已接入会话的归档状态一致。
 ```
 
-准备从官方 OpenAI 登录模式切到 API 模式：
+表示可以切换。
 
-```powershell
-codex-official-api-handoff to api
-codex-official-api-handoff to api --apply
+```text
+结论：这是正常的待交接状态。
 ```
 
-准备从 API 模式切回官方 OpenAI 登录模式：
+表示当前侧有新内容还没带到目标侧。按提示运行对应的 `codex-handoff api` 或 `codex-handoff official` 即可。
 
-```powershell
-codex-official-api-handoff to official
-codex-official-api-handoff to official --apply --api-provider openai-chat-completions
-```
+## 接入更多会话
 
-不带 `--apply` 时，命令默认是 dry-run，只报告将会做什么，不写入任何文件。
-
-`dry-run` 可以理解为“演练模式”或“预览模式”。
-
-## 命令说明
-
-```powershell
-codex-handoff api
-codex-handoff official
-```
-
-短命令。它会自动预览、中文提示、询问确认，然后执行同步。默认使用 `quick` 快速备份。
+如果有某条会话还没有进入 handoff 管理，可以运行：
 
 ```powershell
 codex-handoff connect api
 codex-handoff connect official
 ```
 
-交互式接入更多会话。工具会列出未接入 handoff 的候选会话，用户输入编号后，只复制选中的会话并登记 pair。
-
-```powershell
-codex-handoff mirror api
-codex-handoff mirror official
-```
-
-实验性镜像模式。它的目标是让官方账号和 API 模式的左侧会话列表尽量保持一致。
-
-当前安全策略：
-
-- 默认只处理当前工作区相关会话。
-- 默认跳过 `Automation:` 自动化会话。
-- 默认跳过标题明显包含测试/调试痕迹的会话。
-- 不会删除会话。
-- 写入前使用 `full` 完整备份。
-- 对已经接入 handoff 的会话，会同步正文、标题和归档状态。
-- 归档状态采用保守策略：同一 pair 任意一侧已归档，则同步后两侧都归档。
-- 对尚未接入的会话，会列出候选编号，由用户选择；直接回车表示不接入新会话。
+工具会列出候选会话。输入编号后，只会复制选中的会话。
 
 选择示例：
 
 ```text
-1,3,5     只接入第 1、3、5 条
-1-5       接入第 1 到第 5 条
-all       接入当前显示的全部候选
-直接回车  不接入新会话，只同步已接入会话
+1,3,5     选择第 1、3、5 条
+1-5       选择第 1 到第 5 条
+all       选择当前显示的全部候选
+直接回车  跳过
 ```
 
-```powershell
-codex-official-api-handoff doctor
-```
-
-只读检查当前 `.codex` 状态，包括当前配置的 provider、`auth.json` 是否存在、已登记 pair 数量、以及 `state_5.sqlite` 中各 provider 的会话数量。
-
-```powershell
-codex-official-api-handoff pair add NAME --official OFFICIAL_ID --api API_ID --api-provider PROVIDER
-codex-official-api-handoff pair list
-codex-official-api-handoff title NAME "新的会话标题" --apply
-```
-
-登记和查看 official/API 会话对。工具只会自动同步已经登记的 pair。
-
-```powershell
-codex-official-api-handoff refresh-index
-codex-official-api-handoff refresh-index --apply
-```
-
-刷新已接入 pair 的左侧列表标题索引。默认只预览；`--apply` 会使用 quick 备份，然后把当前统一标题追加到 `session_index.jsonl`，用于修正 Codex Desktop 左侧列表显示的旧标题。
-
-```powershell
-codex-official-api-handoff copy-one THREAD_ID --to official [--apply] [--name NAME]
-codex-official-api-handoff copy-one THREAD_ID --to api [--apply] [--api-provider PROVIDER] [--name NAME]
-```
-
-只复制指定的一条会话到目标 provider，并在 `--apply` 时登记 pair。适合先把当前正在使用的某一条会话接入 handoff 流程。
-
-```powershell
-codex-official-api-handoff to api [--apply] [--api-provider PROVIDER]
-```
-
-同步所有已登记 pair，并准备从 official `openai` 模式交接到 API provider。默认不会复制未配对的新会话；如需复制，需要显式加 `--copy-new`。
-如需在 dry-run 中列出未配对候选明细，可加 `--show-new`。
-写入时可选择 `--backup quick` 或 `--backup full`。
-
-```powershell
-codex-official-api-handoff to official [--apply] [--api-provider PROVIDER]
-```
-
-同步所有已登记 pair，并准备从 API provider 交接回 official `openai`。默认不会复制未配对的新会话；如需复制，需要显式加 `--copy-new`。
-如需在 dry-run 中列出未配对候选明细，可加 `--show-new`。
-写入时可选择 `--backup quick` 或 `--backup full`。
-
-## 备份与回滚
+## 备份与恢复
 
 备份默认保存到：
 
@@ -153,30 +133,65 @@ codex-official-api-handoff to official [--apply] [--api-provider PROVIDER]
 D:\codex-backups\codex-official-api-handoff\YYYYMMDD-HHMMSS
 ```
 
-每个备份目录都会生成：
+每个备份目录里都有：
 
 ```text
 restore-codex-backup.ps1
 ```
 
-如果需要回滚，请先完全退出 Codex，再运行该脚本并加上 `-ConfirmRestore`。
+恢复步骤：
 
-备份模式：
+1. 完全退出 Codex Desktop。
+2. 进入对应备份目录。
+3. 运行：
 
-```text
-quick：只备份本次同步会修改的关键文件，速度较快
-full：备份整个 .codex，最安全但较慢
+```powershell
+powershell -ExecutionPolicy Bypass -File .\restore-codex-backup.ps1 -ConfirmRestore
 ```
 
-## 标题同步
+恢复脚本会先把当前 `.codex` 移到一个 `before-restore-*` 目录，再恢复备份。
 
-同步 pair 时，工具默认使用 `auto` 标题模式：
+## 推荐测试计划
 
-- 如果只有一侧改了标题，采用改过的标题，并同步到另一侧。
-- 如果两侧标题相同，保持一致。
-- 如果两侧都从上次同步标题改成了不同标题，工具会停止并提示标题冲突。
-- 如果某个 pair 设置为 `locked`，则始终使用登记的固定标题。
+本机稳定测试建议持续 2-3 天：
+
+1. API -> 官方：运行 `codex-handoff official`，再用 cc-switch 切官方。
+2. 在官方账号里新增会话、继续旧会话、重命名、归档。
+3. 官方 -> API：运行 `codex-handoff api`，再用 cc-switch 切 API。
+4. 检查左侧列表、标题、归档状态是否一致。
+5. 在 API 里重复新增、继续、重命名、归档。
+6. 再切回官方账号验证。
+
+如果检查命令显示“正常的待交接状态”，这是预期行为，说明当前侧刚产生了新内容，切换前运行对应 handoff 即可。
+
+## 高级命令
+
+完整 CLI：
+
+```powershell
+codex-official-api-handoff doctor
+codex-official-api-handoff check api
+codex-official-api-handoff check official
+codex-official-api-handoff pair list
+codex-official-api-handoff refresh-index
+```
+
+兼容旧式单条主线同步：
+
+```powershell
+codex-handoff sync api
+codex-handoff sync official
+```
+
+一般不建议日常使用 `sync`，普通切换直接用：
+
+```powershell
+codex-handoff api
+codex-handoff official
+```
 
 ## 当前状态
 
-这是早期本地原型。建议始终先 dry-run，确认报告干净后再使用 `--apply`。
+这是早期本地工具，已经在 Windows + Codex Desktop + cc-switch/API provider 场景下完成初步验证。
+
+建议先在私有仓库和个人电脑上持续测试，确认稳定后再公开发布。

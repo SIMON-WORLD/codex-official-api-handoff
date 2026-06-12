@@ -7,7 +7,7 @@ name = "codex-official-api-handoff"
 version = "0.1.0"
 description = "Safe handoff of Codex Desktop conversations between official OpenAI login and cc-switch/custom API mode."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
   { name = "codex-official-api-handoff contributors" }
