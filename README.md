@@ -6,11 +6,36 @@
 
 > 官方账号左侧看到什么，切到 API 后也尽量看到什么；API 里继续聊、重命名、归档后，切回官方账号也能接上。
 
+## 和 cc-switch 的关系
+
+本项目不是 cc-switch 的替代品，而是配合 cc-switch 使用的会话交接工具。
+
+cc-switch 的 Codex 应用增强能力主要解决的是：
+
+- 保留官方 `auth.json` 登录态；
+- 把第三方供应商、模型、endpoint、token 等写入 `config.toml`；
+- 让 Codex Desktop 仍能识别官方账号，从而尽量保留官方插件、手机远程操作等能力；
+- 让模型请求实际走 cc-switch 当前选择的第三方 API provider。
+
+也就是说，cc-switch 解决的是“官方登录态 + 第三方 API 请求路由”的问题。
+
+但在部分 Codex Desktop 环境中，官方账号和 API provider 会被记录为不同的本地会话来源。切换后可能出现：
+
+- 左侧聊天记录不一致；
+- 某些官方账号下的会话在 API 侧不可见；
+- API 侧继续聊过的内容切回官方后接不上；
+- 手动重命名的标题变回旧标题或“你好”；
+- 归档状态在两边不一致。
+
+如果你的 cc-switch 配置已经能让官方账号和 API 之间天然共用同一批左侧会话，并且标题、归档、续聊都正常，那么你可能不需要这个工具。
+
+如果你遇到上述断裂，本项目补齐的是“Codex Desktop 本地会话状态镜像”这一层：同步 `.codex` 里的会话索引、JSONL、标题、归档状态和 SQLite 元数据，让官方/API 两侧尽量沿同一条任务主线继续。
+
 ## 适合谁
 
 - Codex 官方账号额度经常用完，但仍想继续同一批任务的人。
 - 同时使用官方登录和 cc-switch/API provider 的 Codex Desktop 用户。
-- 不想因为切换 provider 导致左侧聊天记录、标题、归档状态断裂的人。
+- 使用 cc-switch 后仍遇到左侧聊天记录、标题、归档状态断裂的人。
 - 希望保留官方登录态、官方插件、远程能力，同时在额度不足时切到 API 的人。
 
 ## 项目优势
@@ -20,6 +45,7 @@
 - 不接管 provider 配置，不覆盖你的 cc-switch 方案。
 - 同步的不只是聊天 JSONL，还包括左侧列表、标题、归档状态和 Codex Desktop 的标题索引。
 - 每次写入前自动备份，并生成恢复脚本。
+- 如果 cc-switch 已经满足你的会话连续需求，可以不使用本工具。
 - 日常只需要记住两个命令：
 
 ```powershell
@@ -126,7 +152,7 @@ codex-handoff official
 %USERPROFILE%\codex-backups\codex-official-api-handoff\YYYYMMDD-HHMMSS
 ```
 
-也可以用环境变量或参数自定义：
+也可以用环境变量或参数自定义。比如想固定备份到其他磁盘：
 
 ```powershell
 $env:CODEX_HANDOFF_BACKUP_BASE="$HOME\codex-backups-custom\codex-official-api-handoff"
@@ -137,6 +163,16 @@ codex-handoff api
 
 ```powershell
 codex-handoff api --backup-base "$HOME\codex-backups-custom\codex-official-api-handoff"
+```
+
+如果希望长期生效，可以设置用户环境变量后重开 PowerShell：
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+  "CODEX_HANDOFF_BACKUP_BASE",
+  "$HOME\codex-backups-custom\codex-official-api-handoff",
+  "User"
+)
 ```
 
 每个备份目录里都有：
@@ -249,3 +285,7 @@ codex-handoff official
 这是早期本地工具，已经在 Windows + Codex Desktop + cc-switch/API provider 场景下完成初步验证。
 
 建议先在私有仓库和个人电脑上持续测试，确认稳定后再公开发布或打 `v0.1.0` 标签。
+
+## 参考
+
+- [cc-switch：使用第三方 API 时保留 Codex 远程操作和官方插件](https://github.com/farion1231/cc-switch/blob/main/docs/guides/codex-official-auth-preservation-guide-zh.md)
