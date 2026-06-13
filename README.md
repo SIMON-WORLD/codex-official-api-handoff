@@ -280,11 +280,6 @@ codex-handoff api
 codex-handoff official
 ```
 
-## 当前状态
-
-这是早期本地工具，已经在 Windows + Codex Desktop + cc-switch/API provider 场景下完成初步验证。
-
-建议先在私有仓库和个人电脑上持续测试，确认稳定后再公开发布或打 `v0.1.0` 标签。
 
 ## 参考
 
