@@ -55,6 +55,7 @@ class MirrorDiff:
     source_archived_target_active: list[tuple[ThreadRecord, ThreadRecord]]
     archived_missing_in_target: list[ThreadRecord]
     archived_extra_in_target: list[ThreadRecord]
+    title_mismatches: list[tuple[ThreadRecord, ThreadRecord, str, str]]
     paired_source_count: int
 
     def has_problems(self) -> bool:
@@ -63,6 +64,7 @@ class MirrorDiff:
             or self.extra_in_target
             or self.source_active_target_archived
             or self.source_archived_target_active
+            or self.title_mismatches
         )
 
     def has_archive_mismatch(self) -> bool:
@@ -89,7 +91,32 @@ def is_generic_title(title: str | None) -> bool:
     return normalized in GENERIC_TITLES or len(normalized) <= 2
 
 
+def is_likely_manual_title(title: str | None) -> bool:
+    if is_generic_title(title):
+        return False
+    text = title.strip()
+    if text.startswith("Automation:"):
+        return False
+    if len(text) <= 40:
+        return True
+    if len(text) >= 80:
+        return False
+    prefixes = ("01 ", "02 ", "03 ", "04 ", "05 ", "06 ", "07 ", "08 ", "09 ")
+    return text.startswith(prefixes)
+
+
+def is_numbered_title(title: str | None) -> bool:
+    if not title:
+        return False
+    text = title.strip()
+    return len(text) >= 3 and text[:2].isdigit() and text[2] in {" ", "-", "_", "、", "."}
+
+
 def mirror_title(source_title: str, target_title: str | None) -> str:
+    if target_title and is_numbered_title(target_title) and not is_numbered_title(source_title):
+        return target_title
+    if target_title and is_likely_manual_title(target_title) and not is_likely_manual_title(source_title):
+        return target_title
     if is_generic_title(source_title) and target_title and not is_generic_title(target_title):
         return target_title
     return source_title
@@ -139,6 +166,29 @@ def append_session_index(path: Path, thread_id: str, title: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def load_session_index_titles(path: Path) -> dict[str, str]:
+    titles: dict[str, str] = {}
+    if not path.exists():
+        return titles
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            thread_id = item.get("id")
+            title = item.get("thread_name")
+            if isinstance(thread_id, str) and isinstance(title, str) and title.strip():
+                titles[thread_id] = title.strip()
+    return titles
+
+
+def record_display_title(record: ThreadRecord, index_titles: dict[str, str] | None = None) -> str:
+    if index_titles and record.id in index_titles:
+        return index_titles[record.id]
+    return record.title
 
 
 def active_rollout_path(paths: CodexPaths, rollout_path: Path) -> Path:
@@ -320,7 +370,13 @@ def sync_pair(
         store.close()
 
 
-def copy_thread_to_provider(paths: CodexPaths, source: ThreadRecord, target_provider: str, apply: bool) -> Pair | None:
+def copy_thread_to_provider(
+    paths: CodexPaths,
+    source: ThreadRecord,
+    target_provider: str,
+    apply: bool,
+    title: str | None = None,
+) -> Pair | None:
     if not apply:
         return None
 
@@ -348,10 +404,12 @@ def copy_thread_to_provider(paths: CodexPaths, source: ThreadRecord, target_prov
         row["id"] = new_id
         row["rollout_path"] = str(destination)
         row["model_provider"] = target_provider
+        if title:
+            row["title"] = title
         copied = ThreadRecord(row)
         store.insert_thread(copied)
         store.commit()
-        append_session_index(paths.session_index, new_id, copied.title)
+        append_session_index(paths.session_index, new_id, title or copied.title)
         if source.provider == OFFICIAL_PROVIDER:
             return Pair(name=source.id[:8], official=source.id, api=new_id, api_provider=target_provider, workspace=source.cwd)
         return Pair(name=new_id[:8], official=new_id, api=source.id, api_provider=source.provider, workspace=source.cwd)
@@ -686,6 +744,7 @@ def compute_mirror_diff(
     target_pair_id = (lambda pair: pair.api) if target_provider != OFFICIAL_PROVIDER else (lambda pair: pair.official)
     pairs_by_source_id = {source_pair_id(pair): pair for pair in pairs}
     pairs_by_target_id = {target_pair_id(pair): pair for pair in pairs}
+    index_titles = load_session_index_titles(paths.session_index)
 
     store = ThreadStore(paths.state_db, readonly=True)
     try:
@@ -718,6 +777,7 @@ def compute_mirror_diff(
         source_archived_target_active: list[tuple[ThreadRecord, ThreadRecord]] = []
         archived_missing: list[ThreadRecord] = []
         archived_extra: list[ThreadRecord] = []
+        title_mismatches: list[tuple[ThreadRecord, ThreadRecord, str, str]] = []
         for record in extra:
             pair = pairs_by_target_id.get(record.id)
             if not pair:
@@ -736,6 +796,11 @@ def compute_mirror_diff(
                 source_active_target_archived.append((source_record, target_record))
             elif source_record.archived and not target_record.archived:
                 source_archived_target_active.append((source_record, target_record))
+            if not source_record.archived and not target_record.archived:
+                source_title = record_display_title(source_record, index_titles)
+                target_title = record_display_title(target_record, index_titles)
+                if source_title != target_title:
+                    title_mismatches.append((source_record, target_record, source_title, target_title))
         for record in source_archived:
             pair = pairs_by_source_id.get(record.id)
             if not pair:
@@ -763,6 +828,7 @@ def compute_mirror_diff(
             source_archived_target_active=source_archived_target_active,
             archived_missing_in_target=archived_missing,
             archived_extra_in_target=archived_extra,
+            title_mismatches=title_mismatches,
             paired_source_count=len(paired_source),
         )
     finally:
@@ -780,6 +846,7 @@ def report_mirror_diff(diff: MirrorDiff, prune_extras: bool = False) -> list[str
         f"目标侧缺少：{len(diff.missing_in_target)} 条",
         f"目标侧额外：{len(diff.extra_in_target)} 条" + ("，将归档隐藏" if prune_extras else "，默认保留"),
         f"已接入会话归档不一致：{len(diff.source_active_target_archived) + len(diff.source_archived_target_active)} 条",
+        f"已接入会话标题不一致：{len(diff.title_mismatches)} 条",
     ]
     if diff.paired_source_archived_extras:
         messages.append(f"其中源侧已归档的配对会话：{len(diff.paired_source_archived_extras)} 条，将同步归档")
@@ -800,6 +867,11 @@ def report_mirror_diff(diff: MirrorDiff, prune_extras: bool = False) -> list[str
         messages.append(f"  归档不一致 - 源侧仍在左侧，目标侧已归档：{display_record(source)} -> {target.id}")
     for source, target in diff.source_archived_target_active[:20]:
         messages.append(f"  归档不一致 - 源侧已归档，目标侧仍在左侧：{display_record(source)} -> {target.id}")
+    for source, target, source_title, target_title in diff.title_mismatches[:20]:
+        messages.append(
+            f"  标题不一致 - {source.id} -> {target.id}："
+            f"源侧《{display_title(source_title, 40)}》，目标侧《{display_title(target_title, 40)}》"
+        )
     return messages
 
 
@@ -903,7 +975,9 @@ def run_mirror(
     pairs_by_target_id = {target_pair_id(pair): pair for pair in pairs}
     source_records = {record.id: record for record in source_all}
     target_records = {record.id: record for record in target_all}
-    source_titles = {record.id: record.title for record in source_all}
+    index_titles = load_session_index_titles(paths.session_index)
+    source_titles = {record.id: record_display_title(record, index_titles) for record in source_all}
+    target_titles = {record.id: record_display_title(record, index_titles) for record in target_all}
     expected_target_ids = set()
     target_source_map: dict[str, ThreadRecord] = {}
     target_title_map: dict[str, str] = {}
@@ -915,7 +989,7 @@ def run_mirror(
         source_record = source_records[source_id]
         target_id = target_pair_id(pair)
         target_record = target_records.get(target_id)
-        title = mirror_title(source_titles[source_id], target_record.title if target_record else None)
+        title = mirror_title(source_titles[source_id], target_titles.get(target_id) if target_record else None)
         pair.title = title
         report = sync_pair(
             paths,
@@ -937,28 +1011,30 @@ def run_mirror(
         target_id = target_pair_id(pair)
         expected_target_ids.add(target_id)
         target_source_map[target_id] = source
-        target_title_map[target_id] = source.title
+        target_title_map[target_id] = record_display_title(source, index_titles)
         pairs_by_target_id[target_id] = pair
         messages.append(f"已接入已有目标侧副本：{source.id} -> official={pair.official} api={pair.api}")
 
     for record in records_to_copy:
-        pair = copy_thread_to_provider(paths, record, target_provider, apply=True)
+        record_title = record_display_title(record, index_titles)
+        pair = copy_thread_to_provider(paths, record, target_provider, apply=True, title=record_title)
         if pair:
-            pair.title = record.title
+            pair.title = record_title
             pair.title_mode = "auto"
             pairs.append(pair)
             target_id = target_pair_id(pair)
             expected_target_ids.add(target_id)
             target_source_map[target_id] = record
-            target_title_map[target_id] = record.title
+            target_title_map[target_id] = pair.title
             messages.append(f"已接入：{record.id} -> official={pair.official} api={pair.api}")
     if converge_visible_union and not prune_extras:
         pairs_by_known_id = paired_ids(pairs)
         reverse_records = [record for record in target_extras if record.id not in pairs_by_known_id]
         for record in reverse_records:
-            pair = copy_thread_to_provider(paths, record, source_provider, apply=True)
+            record_title = record_display_title(record, index_titles)
+            pair = copy_thread_to_provider(paths, record, source_provider, apply=True, title=record_title)
             if pair:
-                pair.title = record.title
+                pair.title = record_title
                 pair.title_mode = "auto"
                 pairs.append(pair)
                 source_id = source_pair_id(pair)
@@ -968,7 +1044,9 @@ def run_mirror(
                 messages.append(f"已反向接入目标侧新增会话：{record.id} -> official={pair.official} api={pair.api}")
                 store = ThreadStore(paths.state_db)
                 try:
-                    store.update_from_source(source_id, record, record.title)
+                    store.update_from_source(source_id, record, pair.title)
+                    append_session_index(paths.session_index, source_id, pair.title)
+                    append_session_index(paths.session_index, target_id, pair.title)
                     if sync_paired_archive:
                         sync_archive_state(paths, store, source_id, record.archived)
                     store.commit()

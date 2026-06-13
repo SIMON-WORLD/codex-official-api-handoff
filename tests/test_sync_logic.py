@@ -6,7 +6,9 @@ from pathlib import Path
 from codex_official_api_handoff.handoff import (
     MirrorDiff,
     check_conclusion,
+    load_session_index_titles,
     mirror_title,
+    record_display_title,
     relocate_rollout_file,
     preferred_title,
     sync_pair_metadata,
@@ -65,6 +67,28 @@ class SyncLogicTests(unittest.TestCase):
     def test_mirror_title_does_not_overwrite_manual_title_with_generic_title(self):
         self.assertEqual(mirror_title("你好", "codex 官方<-> API 会话交接 开发"), "codex 官方<-> API 会话交接 开发")
         self.assertEqual(mirror_title("新的人工标题", "codex 官方<-> API 会话交接 开发"), "新的人工标题")
+        self.assertEqual(mirror_title("你好，我之前在这个文件夹下跟你有很多对话", "01 主线"), "01 主线")
+
+    def test_session_index_title_overrides_sqlite_title(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session_index.jsonl"
+            path.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"id": "thread", "thread_name": "旧标题"}, ensure_ascii=False),
+                        json.dumps({"id": "thread", "thread_name": "01 主线"}, ensure_ascii=False),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            record = ThreadRecord(
+                {"id": "thread", "model_provider": "openai", "title": "你好，我之前在这个文件夹下跟你有很多对话", "rollout_path": "x"}
+            )
+
+            titles = load_session_index_titles(path)
+
+            self.assertEqual(record_display_title(record, titles), "01 主线")
 
     def test_relocate_rollout_file_moves_archived_thread_out_of_sessions(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -126,6 +150,7 @@ class SyncLogicTests(unittest.TestCase):
             source_archived_target_active=[(source, target)],
             archived_missing_in_target=[source],
             archived_extra_in_target=[],
+            title_mismatches=[],
             paired_source_count=0,
         )
 
@@ -147,6 +172,7 @@ class SyncLogicTests(unittest.TestCase):
             source_archived_target_active=[],
             archived_missing_in_target=[],
             archived_extra_in_target=[legacy],
+            title_mismatches=[],
             paired_source_count=2,
         )
 
@@ -168,6 +194,7 @@ class SyncLogicTests(unittest.TestCase):
             source_archived_target_active=[],
             archived_missing_in_target=[],
             archived_extra_in_target=[],
+            title_mismatches=[],
             paired_source_count=0,
         )
 
@@ -193,6 +220,7 @@ class SyncLogicTests(unittest.TestCase):
             source_archived_target_active=[],
             archived_missing_in_target=[],
             archived_extra_in_target=[],
+            title_mismatches=[],
             paired_source_count=0,
         )
 
@@ -200,6 +228,29 @@ class SyncLogicTests(unittest.TestCase):
 
         self.assertEqual(code, 1)
         self.assertIn("目标侧当前比源侧多出会话", message)
+
+    def test_mirror_diff_flags_title_mismatch(self):
+        source = ThreadRecord({"id": "official", "model_provider": "openai", "title": "01 主线", "rollout_path": "x", "archived": 0})
+        target = ThreadRecord({"id": "api", "model_provider": "custom", "title": "旧标题", "rollout_path": "y", "archived": 0})
+        diff = MirrorDiff(
+            source_provider="openai",
+            target_provider="custom",
+            source_count=1,
+            target_count=1,
+            source_archived_count=0,
+            target_archived_count=0,
+            missing_in_target=[],
+            extra_in_target=[],
+            paired_source_archived_extras=[],
+            source_active_target_archived=[],
+            source_archived_target_active=[],
+            archived_missing_in_target=[],
+            archived_extra_in_target=[],
+            title_mismatches=[(source, target, "01 主线", "旧标题")],
+            paired_source_count=1,
+        )
+
+        self.assertTrue(diff.has_problems())
 
 
 if __name__ == "__main__":
