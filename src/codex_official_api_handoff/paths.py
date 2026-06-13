@@ -12,6 +12,13 @@ def default_codex_home() -> Path:
     return Path.home() / ".codex"
 
 
+def default_backup_base() -> Path:
+    env_backup = os.environ.get("CODEX_HANDOFF_BACKUP_BASE")
+    if env_backup:
+        return Path(env_backup)
+    return Path.home() / "codex-backups" / "codex-official-api-handoff"
+
+
 @dataclass(frozen=True)
 class CodexPaths:
     home: Path
@@ -51,4 +58,3 @@ class CodexPaths:
 
 def strip_extended_prefix(path: str) -> Path:
     return Path(path.replace("\\\\?\\", ""))
-

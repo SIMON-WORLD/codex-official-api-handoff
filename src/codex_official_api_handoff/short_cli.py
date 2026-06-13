@@ -6,12 +6,17 @@ from pathlib import Path
 from .config import read_model_provider
 from .handoff import OFFICIAL_PROVIDER, copy_thread_to_provider, is_automation_thread, mirror_plan, run_mirror, run_to
 from .pairs import load_pairs, paired_ids, save_pairs
-from .paths import CodexPaths, default_codex_home
+from .paths import CodexPaths, default_backup_base, default_codex_home
 from .sqlite_store import ThreadRecord, ThreadStore
 
 
 def ask_yes_no(prompt: str) -> bool:
-    answer = input(f"{prompt} [y/N] ").strip().lower()
+    try:
+        answer = input(f"{prompt} [y/N] ").strip().lower()
+    except EOFError:
+        print()
+        print("未收到确认输入，已取消。")
+        return False
     return answer in {"y", "yes", "是", "好"}
 
 
@@ -136,6 +141,7 @@ def candidate_ids(candidates: list[ThreadRecord]) -> set[str]:
 def run_mirror_short(paths: CodexPaths, target: str, backup_base: Path, yes: bool = False) -> int:
     target_label = "API" if target == "api" else "官方账号"
     print(f"准备镜像左侧会话列表到：{target_label}")
+    print(f"备份目录：{backup_base}")
     print("先进行预览，不会写入文件。")
     print()
 
@@ -157,8 +163,16 @@ def run_mirror_short(paths: CodexPaths, target: str, backup_base: Path, yes: boo
         backup_base=backup_base,
         prune_extras=True,
     )
+    backup_location = None
     for message in apply_messages:
         print(message)
+        if message.startswith("备份位置="):
+            backup_location = message.split("=", 1)[1]
+    if backup_location:
+        print()
+        print("如切换后发现异常，可完全退出 Codex Desktop 后运行下面的恢复命令：")
+        print(f"cd \"{backup_location}\"")
+        print("powershell -ExecutionPolicy Bypass -File .\\restore-codex-backup.ps1 -ConfirmRestore")
     print(f"完成。现在可以用 cc-switch 切换到：{target_label}")
     return 0
 
@@ -177,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("target", choices=["api", "official", "connect", "mirror", "sync"], help="要切换到 API、官方账号，接入更多会话，或镜像左侧列表。")
     parser.add_argument("connect_target", nargs="?", choices=["api", "official"], help="connect 时要接入到哪里。")
     parser.add_argument("--codex-home", type=Path, default=default_codex_home())
-    parser.add_argument("--backup-base", type=Path, default=Path(r"D:\codex-backups\codex-official-api-handoff"))
+    parser.add_argument("--backup-base", type=Path, default=default_backup_base())
     parser.add_argument("--backup", choices=["quick", "full"], default="quick")
     parser.add_argument("--yes", action="store_true", help="跳过确认，直接执行。")
     args = parser.parse_args(argv)

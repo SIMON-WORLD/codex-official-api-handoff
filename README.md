@@ -1,10 +1,48 @@
 # codex-official-api-handoff
 
-`codex-official-api-handoff` 是一个本地工具，用来在 Codex Desktop 的官方 OpenAI 登录模式和 cc-switch/API 模式之间交接会话。
+`codex-official-api-handoff` 是一个本地工具，用来在 Codex Desktop 的官方 OpenAI 登录模式和 cc-switch/API provider 模式之间交接会话。
 
-它的目标很简单：
+它解决的核心问题是：
 
 > 官方账号左侧看到什么，切到 API 后也尽量看到什么；API 里继续聊、重命名、归档后，切回官方账号也能接上。
+
+## 适合谁
+
+- Codex 官方账号额度经常用完，但仍想继续同一批任务的人。
+- 同时使用官方登录和 cc-switch/API provider 的 Codex Desktop 用户。
+- 不想因为切换 provider 导致左侧聊天记录、标题、归档状态断裂的人。
+- 希望保留官方登录态、官方插件、远程能力，同时在额度不足时切到 API 的人。
+
+## 项目优势
+
+- 不替代 cc-switch，只补齐会话交接能力。
+- 不修改 `auth.json`，尽量保留官方登录态。
+- 不接管 provider 配置，不覆盖你的 cc-switch 方案。
+- 同步的不只是聊天 JSONL，还包括左侧列表、标题、归档状态和 Codex Desktop 的标题索引。
+- 每次写入前自动备份，并生成恢复脚本。
+- 日常只需要记住两个命令：
+
+```powershell
+codex-handoff api
+codex-handoff official
+```
+
+## 风险说明
+
+这是一个会修改 Codex Desktop 本地状态文件的实验性工具。它会读写：
+
+- `.codex/state_5.sqlite`
+- `.codex/session_index.jsonl`
+- `.codex/sessions/`
+- `.codex/archived_sessions/`
+- `.codex/official-api-handoff/pairs.json`
+
+首次使用前建议：
+
+1. 完全退出 Codex Desktop。
+2. 先运行检查命令。
+3. 确认工具生成了备份。
+4. 小范围测试几轮后再长期使用。
 
 ## 它不会做什么
 
@@ -17,10 +55,16 @@
 
 ## 安装
 
-进入项目目录，运行安装脚本：
+克隆仓库后进入项目目录：
 
 ```powershell
-cd "E:\OneDrive\Develop\codex-official-api-handoff"
+git clone https://github.com/<your-name>/codex-official-api-handoff.git
+cd codex-official-api-handoff
+```
+
+运行安装脚本：
+
+```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
@@ -33,7 +77,7 @@ codex-official-api-handoff
 
 普通用户日常只需要用 `codex-handoff`。
 
-如果 PowerShell 提示“无法识别 codex-handoff”，可以先使用项目本地命令：
+如果 PowerShell 提示“无法识别 codex-handoff”，可以先在项目目录下使用本地命令：
 
 ```powershell
 .\bin\codex-handoff.cmd api
@@ -44,13 +88,17 @@ codex-official-api-handoff
 
 ## 日常切换
 
+记住一句话：
+
+> 准备切到哪边，就先运行 `codex-handoff` 哪边。
+
 准备从官方账号切到 API：
 
 ```powershell
 codex-handoff api
 ```
 
-看到完成提示后，再去 cc-switch 切到 API。
+完成后，再去 cc-switch 切到 API。
 
 准备从 API 切回官方账号：
 
@@ -58,24 +106,56 @@ codex-handoff api
 codex-handoff official
 ```
 
-如果还没有配置 PATH，也可以在项目目录下运行：
-
-```powershell
-.\bin\codex-handoff.cmd api
-.\bin\codex-handoff.cmd official
-```
-
-看到完成提示后，再去 cc-switch 切到官方账号。
+完成后，再去 cc-switch 切到官方账号。
 
 这两个命令会先预览，再询问确认。确认后会：
 
-- 备份 `.codex`；
+- 备份 Codex 本地状态；
 - 同步已接入会话的内容；
 - 同步左侧会话列表；
 - 同步会话标题；
 - 同步归档状态；
 - 把归档会话的 JSONL 文件移动到 Codex Desktop 期望的位置；
 - 修复 SQLite 中残留的旧 JSONL 路径。
+
+## 备份与恢复
+
+默认备份目录是：
+
+```text
+%USERPROFILE%\codex-backups\codex-official-api-handoff\YYYYMMDD-HHMMSS
+```
+
+也可以用环境变量或参数自定义：
+
+```powershell
+$env:CODEX_HANDOFF_BACKUP_BASE="$HOME\codex-backups-custom\codex-official-api-handoff"
+codex-handoff api
+```
+
+或：
+
+```powershell
+codex-handoff api --backup-base "$HOME\codex-backups-custom\codex-official-api-handoff"
+```
+
+每个备份目录里都有：
+
+```text
+restore-codex-backup.ps1
+```
+
+如果切换后发现异常，恢复步骤是：
+
+1. 完全退出 Codex Desktop。
+2. 进入对应备份目录。
+3. 运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\restore-codex-backup.ps1 -ConfirmRestore
+```
+
+恢复脚本会先把当前 `.codex` 移到一个 `before-restore-*` 目录，再恢复备份。
 
 ## 检查状态
 
@@ -125,35 +205,9 @@ all       选择当前显示的全部候选
 直接回车  跳过
 ```
 
-## 备份与恢复
-
-备份默认保存到：
-
-```text
-D:\codex-backups\codex-official-api-handoff\YYYYMMDD-HHMMSS
-```
-
-每个备份目录里都有：
-
-```text
-restore-codex-backup.ps1
-```
-
-恢复步骤：
-
-1. 完全退出 Codex Desktop。
-2. 进入对应备份目录。
-3. 运行：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\restore-codex-backup.ps1 -ConfirmRestore
-```
-
-恢复脚本会先把当前 `.codex` 移到一个 `before-restore-*` 目录，再恢复备份。
-
 ## 推荐测试计划
 
-本机稳定测试建议持续 2-3 天：
+建议首次使用时测试 2-3 轮：
 
 1. API -> 官方：运行 `codex-handoff official`，再用 cc-switch 切官方。
 2. 在官方账号里新增会话、继续旧会话、重命名、归档。
@@ -194,4 +248,4 @@ codex-handoff official
 
 这是早期本地工具，已经在 Windows + Codex Desktop + cc-switch/API provider 场景下完成初步验证。
 
-建议先在私有仓库和个人电脑上持续测试，确认稳定后再公开发布。
+建议先在私有仓库和个人电脑上持续测试，确认稳定后再公开发布或打 `v0.1.0` 标签。

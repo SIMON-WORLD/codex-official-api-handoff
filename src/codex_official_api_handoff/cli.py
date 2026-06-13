@@ -6,7 +6,7 @@ from pathlib import Path
 from .config import read_model_provider
 from .handoff import check_conclusion, compute_mirror_diff, copy_one, refresh_session_index, report_mirror_diff, run_to, set_pair_title
 from .pairs import Pair, load_pairs, pair_names, save_pairs
-from .paths import CodexPaths, default_codex_home
+from .paths import CodexPaths, default_backup_base, default_codex_home
 from .sqlite_store import ThreadStore
 
 
@@ -16,7 +16,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--backup-base",
         type=Path,
-        default=Path(r"D:\codex-backups\codex-official-api-handoff"),
+        default=default_backup_base(),
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
