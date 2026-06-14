@@ -56,6 +56,8 @@ class MirrorDiff:
     archived_missing_in_target: list[ThreadRecord]
     archived_extra_in_target: list[ThreadRecord]
     title_mismatches: list[tuple[ThreadRecord, ThreadRecord, str, str]]
+    order_mismatches: list[tuple[int, ThreadRecord | None, ThreadRecord | None]]
+    timestamp_mismatches: list[tuple[ThreadRecord, ThreadRecord, int | None, int | None]]
     paired_source_count: int
 
     def has_problems(self) -> bool:
@@ -65,6 +67,8 @@ class MirrorDiff:
             or self.source_active_target_archived
             or self.source_archived_target_active
             or self.title_mismatches
+            or self.order_mismatches
+            or self.timestamp_mismatches
         )
 
     def has_archive_mismatch(self) -> bool:
@@ -778,6 +782,8 @@ def compute_mirror_diff(
         archived_missing: list[ThreadRecord] = []
         archived_extra: list[ThreadRecord] = []
         title_mismatches: list[tuple[ThreadRecord, ThreadRecord, str, str]] = []
+        order_mismatches: list[tuple[int, ThreadRecord | None, ThreadRecord | None]] = []
+        timestamp_mismatches: list[tuple[ThreadRecord, ThreadRecord, int | None, int | None]] = []
         for record in extra:
             pair = pairs_by_target_id.get(record.id)
             if not pair:
@@ -801,6 +807,22 @@ def compute_mirror_diff(
                 target_title = record_display_title(target_record, index_titles)
                 if source_title != target_title:
                     title_mismatches.append((source_record, target_record, source_title, target_title))
+                source_updated = source_record.data.get("updated_at")
+                target_updated = target_record.data.get("updated_at")
+                if source_updated != target_updated:
+                    timestamp_mismatches.append((source_record, target_record, source_updated, target_updated))
+        expected_order = [target_pair_id(pairs_by_source_id[record.id]) for record in paired_source]
+        actual_order = [record.id for record in target_visible if record.id in expected_target_ids]
+        if expected_order != actual_order:
+            for index, (expected_id, actual_id) in enumerate(zip(expected_order, actual_order), 1):
+                if expected_id != actual_id:
+                    order_mismatches.append((index, target_by_id.get(expected_id), target_by_id.get(actual_id)))
+            if len(expected_order) > len(actual_order):
+                for index, expected_id in enumerate(expected_order[len(actual_order) :], len(actual_order) + 1):
+                    order_mismatches.append((index, target_by_id.get(expected_id), None))
+            elif len(actual_order) > len(expected_order):
+                for index, actual_id in enumerate(actual_order[len(expected_order) :], len(expected_order) + 1):
+                    order_mismatches.append((index, None, target_by_id.get(actual_id)))
         for record in source_archived:
             pair = pairs_by_source_id.get(record.id)
             if not pair:
@@ -829,6 +851,8 @@ def compute_mirror_diff(
             archived_missing_in_target=archived_missing,
             archived_extra_in_target=archived_extra,
             title_mismatches=title_mismatches,
+            order_mismatches=order_mismatches,
+            timestamp_mismatches=timestamp_mismatches,
             paired_source_count=len(paired_source),
         )
     finally:
@@ -847,6 +871,8 @@ def report_mirror_diff(diff: MirrorDiff, prune_extras: bool = False) -> list[str
         f"目标侧额外：{len(diff.extra_in_target)} 条" + ("，将归档隐藏" if prune_extras else "，默认保留"),
         f"已接入会话归档不一致：{len(diff.source_active_target_archived) + len(diff.source_archived_target_active)} 条",
         f"已接入会话标题不一致：{len(diff.title_mismatches)} 条",
+        f"已接入会话排序不一致：{len(diff.order_mismatches)} 条",
+        f"已接入会话更新时间不一致：{len(diff.timestamp_mismatches)} 条",
     ]
     if diff.paired_source_archived_extras:
         messages.append(f"其中源侧已归档的配对会话：{len(diff.paired_source_archived_extras)} 条，将同步归档")
@@ -871,6 +897,15 @@ def report_mirror_diff(diff: MirrorDiff, prune_extras: bool = False) -> list[str
         messages.append(
             f"  标题不一致 - {source.id} -> {target.id}："
             f"源侧《{display_title(source_title, 40)}》，目标侧《{display_title(target_title, 40)}》"
+        )
+    for index, expected, actual in diff.order_mismatches[:20]:
+        expected_text = display_record(expected, 50) if expected else "<缺少>"
+        actual_text = display_record(actual, 50) if actual else "<缺少>"
+        messages.append(f"  排序不一致 - 第 {index} 位：应为 {expected_text}，实际为 {actual_text}")
+    for source, target, source_updated, target_updated in diff.timestamp_mismatches[:20]:
+        messages.append(
+            f"  更新时间不一致 - {source.id} -> {target.id}："
+            f"源侧 {source_updated}，目标侧 {target_updated}"
         )
     return messages
 

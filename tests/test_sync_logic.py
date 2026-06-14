@@ -151,6 +151,8 @@ class SyncLogicTests(unittest.TestCase):
             archived_missing_in_target=[source],
             archived_extra_in_target=[],
             title_mismatches=[],
+            order_mismatches=[],
+            timestamp_mismatches=[],
             paired_source_count=0,
         )
 
@@ -173,6 +175,8 @@ class SyncLogicTests(unittest.TestCase):
             archived_missing_in_target=[],
             archived_extra_in_target=[legacy],
             title_mismatches=[],
+            order_mismatches=[],
+            timestamp_mismatches=[],
             paired_source_count=2,
         )
 
@@ -195,6 +199,8 @@ class SyncLogicTests(unittest.TestCase):
             archived_missing_in_target=[],
             archived_extra_in_target=[],
             title_mismatches=[],
+            order_mismatches=[],
+            timestamp_mismatches=[],
             paired_source_count=0,
         )
 
@@ -221,6 +227,8 @@ class SyncLogicTests(unittest.TestCase):
             archived_missing_in_target=[],
             archived_extra_in_target=[],
             title_mismatches=[],
+            order_mismatches=[],
+            timestamp_mismatches=[],
             paired_source_count=0,
         )
 
@@ -247,6 +255,58 @@ class SyncLogicTests(unittest.TestCase):
             archived_missing_in_target=[],
             archived_extra_in_target=[],
             title_mismatches=[(source, target, "01 主线", "旧标题")],
+            order_mismatches=[],
+            timestamp_mismatches=[],
+            paired_source_count=1,
+        )
+
+        self.assertTrue(diff.has_problems())
+
+    def test_mirror_diff_flags_order_mismatch(self):
+        first = ThreadRecord({"id": "first", "model_provider": "custom", "title": "first", "rollout_path": "x", "archived": 0})
+        second = ThreadRecord({"id": "second", "model_provider": "custom", "title": "second", "rollout_path": "y", "archived": 0})
+        diff = MirrorDiff(
+            source_provider="openai",
+            target_provider="custom",
+            source_count=2,
+            target_count=2,
+            source_archived_count=0,
+            target_archived_count=0,
+            missing_in_target=[],
+            extra_in_target=[],
+            paired_source_archived_extras=[],
+            source_active_target_archived=[],
+            source_archived_target_active=[],
+            archived_missing_in_target=[],
+            archived_extra_in_target=[],
+            title_mismatches=[],
+            order_mismatches=[(1, first, second)],
+            timestamp_mismatches=[],
+            paired_source_count=2,
+        )
+
+        self.assertTrue(diff.has_problems())
+
+    def test_mirror_diff_flags_timestamp_mismatch(self):
+        source = ThreadRecord({"id": "official", "model_provider": "openai", "title": "same", "rollout_path": "x", "archived": 0})
+        target = ThreadRecord({"id": "api", "model_provider": "custom", "title": "same", "rollout_path": "y", "archived": 0})
+        diff = MirrorDiff(
+            source_provider="openai",
+            target_provider="custom",
+            source_count=1,
+            target_count=1,
+            source_archived_count=0,
+            target_archived_count=0,
+            missing_in_target=[],
+            extra_in_target=[],
+            paired_source_archived_extras=[],
+            source_active_target_archived=[],
+            source_archived_target_active=[],
+            archived_missing_in_target=[],
+            archived_extra_in_target=[],
+            title_mismatches=[],
+            order_mismatches=[],
+            timestamp_mismatches=[(source, target, 1, 2)],
             paired_source_count=1,
         )
 
