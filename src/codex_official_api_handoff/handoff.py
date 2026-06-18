@@ -526,7 +526,8 @@ def copy_one(
 
 
 def is_automation_thread(record: ThreadRecord) -> bool:
-    return record.title.startswith("Automation:")
+    first_message = record.data.get("first_user_message") or ""
+    return record.title.lstrip().startswith("Automation:") or first_message.lstrip().startswith("Automation:")
 
 
 def is_test_thread(record: ThreadRecord) -> bool:
@@ -701,7 +702,7 @@ def mirror_plan(
     paths: CodexPaths,
     target: str,
     api_provider: str | None = None,
-    include_automation: bool = True,
+    include_automation: bool = False,
     include_tests: bool = False,
     current_workspace_only: bool = False,
 ) -> MirrorPlan:
@@ -759,7 +760,7 @@ def compute_mirror_diff(
     paths: CodexPaths,
     target: str,
     api_provider: str | None = None,
-    include_automation: bool = True,
+    include_automation: bool = False,
     current_workspace_only: bool = False,
 ) -> MirrorDiff:
     _, source_provider, target_provider = infer_mirror_providers(paths, target, api_provider=api_provider)
@@ -883,6 +884,7 @@ def compute_mirror_diff(
 def report_mirror_diff(diff: MirrorDiff, prune_extras: bool = False) -> list[str]:
     messages = [
         f"镜像方向：{provider_label(diff.source_provider)} -> {provider_label(diff.target_provider)}",
+        "Automation 历史运行会话默认不参与镜像。",
         f"源侧左侧会话：{diff.source_count} 条",
         f"目标侧左侧会话：{diff.target_count} 条",
         f"源侧归档会话：{diff.source_archived_count} 条",
@@ -960,7 +962,7 @@ def run_mirror(
     apply: bool,
     backup_base: Path,
     api_provider: str | None = None,
-    include_automation: bool = True,
+    include_automation: bool = False,
     include_tests: bool = False,
     current_workspace_only: bool = False,
     selected_ids: set[str] | None = None,

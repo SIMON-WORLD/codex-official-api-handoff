@@ -6,6 +6,7 @@ from pathlib import Path
 from codex_official_api_handoff.handoff import (
     MirrorDiff,
     check_conclusion,
+    is_automation_thread,
     load_session_index_titles,
     mirror_title,
     record_display_title,
@@ -97,6 +98,27 @@ class SyncLogicTests(unittest.TestCase):
     def test_session_index_timestamp_preserves_unix_milliseconds(self):
         self.assertEqual(session_index_timestamp(1_000), "1970-01-01T00:16:40.000Z")
         self.assertEqual(session_index_timestamp(1_700_000_000_123), "2023-11-14T22:13:20.123Z")
+
+    def test_automation_detection_uses_title_or_first_message(self):
+        title_record = ThreadRecord(
+            {"id": "a", "model_provider": "custom", "title": "Automation: nightly", "rollout_path": "x"}
+        )
+        message_record = ThreadRecord(
+            {
+                "id": "b",
+                "model_provider": "custom",
+                "title": "Ready 稿统一 raw 巡检",
+                "first_user_message": "Automation: Ready 稿统一 raw 巡检\nAutomation ID: test",
+                "rollout_path": "y",
+            }
+        )
+        normal_record = ThreadRecord(
+            {"id": "c", "model_provider": "custom", "title": "讨论 Automation 设计", "rollout_path": "z"}
+        )
+
+        self.assertTrue(is_automation_thread(title_record))
+        self.assertTrue(is_automation_thread(message_record))
+        self.assertFalse(is_automation_thread(normal_record))
 
     def test_relocate_rollout_file_moves_archived_thread_out_of_sessions(self):
         with tempfile.TemporaryDirectory() as tmp:

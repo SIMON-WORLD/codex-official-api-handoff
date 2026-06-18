@@ -78,6 +78,7 @@ codex-handoff official
 - 不删除会话。
 - 不绕过官方额度限制。
 - 不把 provider 绑定的 `encrypted_content` 强行复制到另一侧。
+- 不跨 provider 复制 Automation 历史运行会话；自动化任务本身仍由 Codex Desktop 管理并正常运行。
 
 ## 安装
 
@@ -141,6 +142,7 @@ codex-handoff official
 - 同步左侧会话列表；
 - 同步会话标题；
 - 同步归档状态；
+- 默认排除 Automation 历史运行会话，避免不同 provider 的展示规则污染左侧列表；
 - 把归档会话的 JSONL 文件移动到 Codex Desktop 期望的位置；
 - 修复 SQLite 中残留的旧 JSONL 路径。
 
