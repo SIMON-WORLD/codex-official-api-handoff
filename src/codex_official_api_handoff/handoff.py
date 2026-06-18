@@ -4,7 +4,7 @@ import json
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .backup import create_full_backup, create_quick_backup
@@ -161,11 +161,20 @@ def report_sync_message(report: SyncReport) -> str:
     return f"会话 {report.pair.name}：发现{source}侧有新增内容记录 {report.extra_lines} 条，准备同步到{target}{encrypted}{title}。"
 
 
-def append_session_index(path: Path, thread_id: str, title: str) -> None:
+def session_index_timestamp(updated_at: int | float | str | None = None) -> str:
+    if isinstance(updated_at, str) and updated_at.strip():
+        return updated_at.strip()
+    if isinstance(updated_at, (int, float)):
+        seconds = updated_at / 1000 if updated_at > 10_000_000_000 else updated_at
+        return datetime.fromtimestamp(seconds, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def append_session_index(path: Path, thread_id: str, title: str, updated_at: int | float | str | None = None) -> None:
     entry = {
         "id": thread_id,
         "thread_name": title,
-        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "updated_at": session_index_timestamp(updated_at),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8", newline="\n") as handle:
@@ -337,8 +346,8 @@ def sync_pair(
                 repair_rollout_path_if_needed(store, api.id, api.rollout_path, api_path)
                 sync_pair_metadata(store, pair, official, api, title, archived=forced_archived)
                 store.commit()
-                append_session_index(paths.session_index, official.id, title)
-                append_session_index(paths.session_index, api.id, title)
+                append_session_index(paths.session_index, official.id, title, official.data.get("updated_at_ms") or official.data.get("updated_at"))
+                append_session_index(paths.session_index, api.id, title, api.data.get("updated_at_ms") or api.data.get("updated_at"))
             return SyncReport(pair, "none", 0, 0, apply, title=title)
         else:
             raise RuntimeError(
@@ -359,15 +368,16 @@ def sync_pair(
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 with target_path.open("a", encoding="utf-8", newline="\n") as handle:
                     handle.writelines(rewritten)
-            now = int(time.time())
+            source_seconds = source.data.get("updated_at") or int(time.time())
+            source_ms = source.data.get("updated_at_ms") or int(source_seconds) * 1000
             repair_rollout_path_if_needed(store, official.id, official.rollout_path, official_path)
             repair_rollout_path_if_needed(store, api.id, api.rollout_path, api_path)
             if rewritten:
-                store.update_after_sync(target.id, source, now, now * 1000)
+                store.update_after_sync(target.id, source, int(source_seconds), int(source_ms))
             sync_pair_metadata(store, pair, official, api, title, archived=forced_archived)
             store.commit()
-            append_session_index(paths.session_index, target.id, title or target.title)
-            append_session_index(paths.session_index, source.id, title or source.title)
+            append_session_index(paths.session_index, target.id, title or target.title, source_ms)
+            append_session_index(paths.session_index, source.id, title or source.title, source_ms)
 
         return SyncReport(pair, direction, len(extra), encrypted_count(extra), apply, title=title)
     finally:
@@ -413,7 +423,12 @@ def copy_thread_to_provider(
         copied = ThreadRecord(row)
         store.insert_thread(copied)
         store.commit()
-        append_session_index(paths.session_index, new_id, title or copied.title)
+        append_session_index(
+            paths.session_index,
+            new_id,
+            title or copied.title,
+            source.data.get("updated_at_ms") or source.data.get("updated_at"),
+        )
         if source.provider == OFFICIAL_PROVIDER:
             return Pair(name=source.id[:8], official=source.id, api=new_id, api_provider=target_provider, workspace=source.cwd)
         return Pair(name=new_id[:8], official=new_id, api=source.id, api_provider=source.provider, workspace=source.cwd)
@@ -633,8 +648,14 @@ def set_pair_title(paths: CodexPaths, pair_name: str, title: str, apply: bool) -
         store.commit()
     finally:
         store.close()
-    append_session_index(paths.session_index, pair.official, title)
-    append_session_index(paths.session_index, pair.api, title)
+    store = ThreadStore(paths.state_db, readonly=True)
+    try:
+        official = store.get(pair.official)
+        api = store.get(pair.api)
+    finally:
+        store.close()
+    append_session_index(paths.session_index, pair.official, title, official.data.get("updated_at_ms") or official.data.get("updated_at"))
+    append_session_index(paths.session_index, pair.api, title, api.data.get("updated_at_ms") or api.data.get("updated_at"))
     messages.append("标题已更新。")
     return messages
 
@@ -661,8 +682,8 @@ def refresh_session_index(paths: CodexPaths, apply: bool, backup_base: Path | No
             title = preferred_title(pair, official, api)
             if apply:
                 sync_pair_metadata(store, pair, official, api, title)
-                append_session_index(paths.session_index, official.id, title)
-                append_session_index(paths.session_index, api.id, title)
+                append_session_index(paths.session_index, official.id, title, official.data.get("updated_at_ms") or official.data.get("updated_at"))
+                append_session_index(paths.session_index, api.id, title, api.data.get("updated_at_ms") or api.data.get("updated_at"))
             refreshed += 2
             messages.append(f"会话 {pair.name}：{title}")
         if apply:
@@ -1080,8 +1101,9 @@ def run_mirror(
                 store = ThreadStore(paths.state_db)
                 try:
                     store.update_from_source(source_id, record, pair.title)
-                    append_session_index(paths.session_index, source_id, pair.title)
-                    append_session_index(paths.session_index, target_id, pair.title)
+                    record_updated_at = record.data.get("updated_at_ms") or record.data.get("updated_at")
+                    append_session_index(paths.session_index, source_id, pair.title, record_updated_at)
+                    append_session_index(paths.session_index, target_id, pair.title, record_updated_at)
                     if sync_paired_archive:
                         sync_archive_state(paths, store, source_id, record.archived)
                     store.commit()
@@ -1090,7 +1112,11 @@ def run_mirror(
     store = ThreadStore(paths.state_db)
     try:
         for target_id, source in target_source_map.items():
-            store.update_from_source(target_id, source, target_title_map.get(target_id, source.title))
+            synced_title = target_title_map.get(target_id, source.title)
+            store.update_from_source(target_id, source, synced_title)
+            source_updated_at = source.data.get("updated_at_ms") or source.data.get("updated_at")
+            append_session_index(paths.session_index, target_id, synced_title, source_updated_at)
+            append_session_index(paths.session_index, source.id, synced_title, source_updated_at)
             if sync_paired_archive:
                 sync_archive_state(paths, store, target_id, source.archived)
         if prune_extras:

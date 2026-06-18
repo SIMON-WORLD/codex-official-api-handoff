@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from .config import read_model_provider
@@ -187,6 +188,8 @@ def run_daily_handoff(paths: CodexPaths, target: str, backup_base: Path, yes: bo
 
 
 def main(argv: list[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
     parser = argparse.ArgumentParser(prog="codex-handoff")
     parser.add_argument("target", choices=["api", "official", "connect", "mirror", "sync"], help="要切换到 API、官方账号，接入更多会话，或镜像左侧列表。")
     parser.add_argument("connect_target", nargs="?", choices=["api", "official"], help="connect 时要接入到哪里。")

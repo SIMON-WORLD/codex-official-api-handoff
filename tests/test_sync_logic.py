@@ -11,6 +11,7 @@ from codex_official_api_handoff.handoff import (
     record_display_title,
     relocate_rollout_file,
     preferred_title,
+    session_index_timestamp,
     sync_pair_metadata,
 )
 from codex_official_api_handoff.pairs import Pair
@@ -89,6 +90,13 @@ class SyncLogicTests(unittest.TestCase):
             titles = load_session_index_titles(path)
 
             self.assertEqual(record_display_title(record, titles), "01 主线")
+
+    def test_session_index_timestamp_preserves_unix_seconds(self):
+        self.assertEqual(session_index_timestamp(0), "1970-01-01T00:00:00.000Z")
+
+    def test_session_index_timestamp_preserves_unix_milliseconds(self):
+        self.assertEqual(session_index_timestamp(1_000), "1970-01-01T00:16:40.000Z")
+        self.assertEqual(session_index_timestamp(1_700_000_000_123), "2023-11-14T22:13:20.123Z")
 
     def test_relocate_rollout_file_moves_archived_thread_out_of_sessions(self):
         with tempfile.TemporaryDirectory() as tmp:
