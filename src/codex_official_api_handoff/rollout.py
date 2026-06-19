@@ -52,6 +52,30 @@ def rewrite_extra_line(line: str, source_id: str, target_id: str, target_provide
     return json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n"
 
 
+def rewrite_rollout_for_target(
+    lines: list[str], source_id: str, target_id: str, target_provider: str
+) -> list[str]:
+    """Rewrite a complete rollout as the target provider's local copy."""
+    rewritten: list[str] = []
+    for line in lines:
+        item = json.loads(line)
+        payload = item.get("payload")
+        if isinstance(payload, dict):
+            payload.pop("encrypted_content", None)
+            if item.get("type") == "session_meta":
+                payload["id"] = target_id
+                payload["model_provider"] = target_provider
+            else:
+                if payload.get("id") == source_id:
+                    payload["id"] = target_id
+                if payload.get("thread_id") == source_id:
+                    payload["thread_id"] = target_id
+                if payload.get("model_provider"):
+                    payload["model_provider"] = target_provider
+        rewritten.append(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n")
+    return rewritten
+
+
 def common_prefix(source_lines: list[str], target_lines: list[str], source_id: str, target_id: str, target_provider: str) -> int:
     common = 0
     for target_line, source_line in zip(target_lines, source_lines):

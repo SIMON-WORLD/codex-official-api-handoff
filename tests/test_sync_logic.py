@@ -17,7 +17,7 @@ from codex_official_api_handoff.handoff import (
 )
 from codex_official_api_handoff.pairs import Pair
 from codex_official_api_handoff.paths import CodexPaths
-from codex_official_api_handoff.rollout import common_prefix
+from codex_official_api_handoff.rollout import common_prefix, rewrite_rollout_for_target
 from codex_official_api_handoff.short_cli import parse_selection
 from codex_official_api_handoff.sqlite_store import ThreadRecord
 
@@ -49,6 +49,31 @@ class SyncLogicTests(unittest.TestCase):
             line({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"text": "Y"}]}}),
         ]
         self.assertEqual(common_prefix(source, target, "api", "official", "openai"), 1)
+
+    def test_complete_rollout_rewrite_keeps_target_identity_and_removes_encryption(self):
+        source = [
+            line({"type": "session_meta", "payload": {"id": "official", "model_provider": "openai"}}),
+            line(
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "thread_id": "official",
+                        "model_provider": "openai",
+                        "encrypted_content": "provider-bound",
+                        "content": "kept",
+                    },
+                }
+            ),
+        ]
+
+        rewritten = [json.loads(item) for item in rewrite_rollout_for_target(source, "official", "api", "custom")]
+
+        self.assertEqual(rewritten[0]["payload"]["id"], "api")
+        self.assertEqual(rewritten[0]["payload"]["model_provider"], "custom")
+        self.assertEqual(rewritten[1]["payload"]["thread_id"], "api")
+        self.assertEqual(rewritten[1]["payload"]["model_provider"], "custom")
+        self.assertNotIn("encrypted_content", rewritten[1]["payload"])
+        self.assertEqual(rewritten[1]["payload"]["content"], "kept")
 
     def test_auto_title_adopts_one_sided_change(self):
         pair = Pair("main", "official", "api", "custom", title="old")
@@ -293,8 +318,12 @@ class SyncLogicTests(unittest.TestCase):
         self.assertTrue(diff.has_problems())
 
     def test_mirror_diff_flags_order_mismatch(self):
-        first = ThreadRecord({"id": "first", "model_provider": "custom", "title": "first", "rollout_path": "x", "archived": 0})
-        second = ThreadRecord({"id": "second", "model_provider": "custom", "title": "second", "rollout_path": "y", "archived": 0})
+        first = ThreadRecord(
+            {"id": "first", "model_provider": "custom", "title": "first", "rollout_path": "x", "archived": 0, "updated_at": 2}
+        )
+        second = ThreadRecord(
+            {"id": "second", "model_provider": "custom", "title": "second", "rollout_path": "y", "archived": 0, "updated_at": 1}
+        )
         diff = MirrorDiff(
             source_provider="openai",
             target_provider="custom",

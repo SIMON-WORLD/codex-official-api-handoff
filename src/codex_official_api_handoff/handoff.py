@@ -11,7 +11,7 @@ from .backup import create_full_backup, create_quick_backup
 from .config import read_model_provider
 from .pairs import Pair, load_pairs, paired_ids, save_pairs
 from .paths import CodexPaths
-from .rollout import common_prefix, encrypted_count, load_jsonl, rewrite_extra_line
+from .rollout import common_prefix, encrypted_count, load_jsonl, rewrite_extra_line, rewrite_rollout_for_target, write_jsonl
 from .sqlite_store import ThreadRecord, ThreadStore
 
 
@@ -26,6 +26,7 @@ class SyncReport:
     encrypted_removed: int
     applied: bool
     title: str | None = None
+    conflict_resolved: bool = False
 
 
 @dataclass
@@ -158,6 +159,11 @@ def report_sync_message(report: SyncReport) -> str:
     encrypted = f"，已忽略 provider 加密片段 {report.encrypted_removed} 个" if report.encrypted_removed else ""
     short = display_title(report.title)
     title = f"，标题：{short}" if short else ""
+    if report.conflict_resolved:
+        return (
+            f"会话 {report.pair.name}：检测到两侧内容分叉，已以{source}侧为主线重建{target}副本"
+            f"（旧副本已包含在本次完整备份中）{encrypted}{title}。"
+        )
     return f"会话 {report.pair.name}：发现{source}侧有新增内容记录 {report.extra_lines} 条，准备同步到{target}{encrypted}{title}。"
 
 
@@ -316,6 +322,7 @@ def sync_pair(
     apply: bool,
     forced_title: str | None = None,
     forced_archived: bool | None = None,
+    forced_source_id: str | None = None,
 ) -> SyncReport:
     store = ThreadStore(paths.state_db, readonly=not apply)
     try:
@@ -350,9 +357,39 @@ def sync_pair(
                 append_session_index(paths.session_index, api.id, title, api.data.get("updated_at_ms") or api.data.get("updated_at"))
             return SyncReport(pair, "none", 0, 0, apply, title=title)
         else:
-            raise RuntimeError(
-                f"Conflict for pair {pair.name}: api_common={api_common}, official_common={official_common}, "
-                f"api_lines={len(api_lines)}, official_lines={len(official_lines)}"
+            if forced_source_id not in {official.id, api.id}:
+                raise RuntimeError(
+                    f"Conflict for pair {pair.name}: api_common={api_common}, official_common={official_common}, "
+                    f"api_lines={len(api_lines)}, official_lines={len(official_lines)}"
+                )
+            source = official if forced_source_id == official.id else api
+            target = api if source.id == official.id else official
+            source_lines = official_lines if source.id == official.id else api_lines
+            target_lines = api_lines if target.id == api.id else official_lines
+            direction = "official-to-api" if source.id == official.id else "api-to-official"
+            rewritten = rewrite_rollout_for_target(source_lines, source.id, target.id, target.provider)
+            if apply:
+                target_path = api_path if target.id == api.id else official_path
+                temporary_path = target_path.with_name(target_path.name + ".handoff-tmp")
+                write_jsonl(temporary_path, rewritten)
+                temporary_path.replace(target_path)
+                source_seconds = source.data.get("updated_at") or int(time.time())
+                source_ms = source.data.get("updated_at_ms") or int(source_seconds) * 1000
+                repair_rollout_path_if_needed(store, official.id, official.rollout_path, official_path)
+                repair_rollout_path_if_needed(store, api.id, api.rollout_path, api_path)
+                store.update_after_sync(target.id, source, int(source_seconds), int(source_ms))
+                sync_pair_metadata(store, pair, official, api, title, archived=forced_archived)
+                store.commit()
+                append_session_index(paths.session_index, target.id, title or target.title, source_ms)
+                append_session_index(paths.session_index, source.id, title or source.title, source_ms)
+            return SyncReport(
+                pair,
+                direction,
+                len(source_lines),
+                encrypted_count(source_lines),
+                apply,
+                title=title,
+                conflict_resolved=True,
             )
 
         extra = source_lines[common:]
@@ -838,7 +875,13 @@ def compute_mirror_diff(
         if expected_order != actual_order:
             for index, (expected_id, actual_id) in enumerate(zip(expected_order, actual_order), 1):
                 if expected_id != actual_id:
-                    order_mismatches.append((index, target_by_id.get(expected_id), target_by_id.get(actual_id)))
+                    expected_record = target_by_id.get(expected_id)
+                    actual_record = target_by_id.get(actual_id)
+                    expected_updated = expected_record.data.get("updated_at") if expected_record else None
+                    actual_updated = actual_record.data.get("updated_at") if actual_record else None
+                    # SQLite does not define an order for equal timestamps, so either order is visually equivalent.
+                    if expected_updated != actual_updated:
+                        order_mismatches.append((index, expected_record, actual_record))
             if len(expected_order) > len(actual_order):
                 for index, expected_id in enumerate(expected_order[len(actual_order) :], len(actual_order) + 1):
                     order_mismatches.append((index, target_by_id.get(expected_id), None))
@@ -1055,6 +1098,7 @@ def run_mirror(
             apply=True,
             forced_title=title,
             forced_archived=source_record.archived if sync_paired_archive else None,
+            forced_source_id=source_record.id,
         )
         expected_target_ids.add(target_id)
         target_source_map[target_id] = source_record
