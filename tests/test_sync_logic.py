@@ -9,10 +9,12 @@ from codex_official_api_handoff.handoff import (
     is_automation_thread,
     load_session_index_titles,
     mirror_title,
+    pinned_pair_diff,
     record_display_title,
     relocate_rollout_file,
     preferred_title,
     session_index_timestamp,
+    sync_pinned_state,
     sync_pair_metadata,
 )
 from codex_official_api_handoff.pairs import Pair
@@ -208,6 +210,8 @@ class SyncLogicTests(unittest.TestCase):
             title_mismatches=[],
             order_mismatches=[],
             timestamp_mismatches=[],
+            pinned_missing_in_target=[],
+            pinned_extra_in_target=[],
             paired_source_count=0,
         )
 
@@ -232,6 +236,8 @@ class SyncLogicTests(unittest.TestCase):
             title_mismatches=[],
             order_mismatches=[],
             timestamp_mismatches=[],
+            pinned_missing_in_target=[],
+            pinned_extra_in_target=[],
             paired_source_count=2,
         )
 
@@ -256,6 +262,8 @@ class SyncLogicTests(unittest.TestCase):
             title_mismatches=[],
             order_mismatches=[],
             timestamp_mismatches=[],
+            pinned_missing_in_target=[],
+            pinned_extra_in_target=[],
             paired_source_count=0,
         )
 
@@ -284,6 +292,8 @@ class SyncLogicTests(unittest.TestCase):
             title_mismatches=[],
             order_mismatches=[],
             timestamp_mismatches=[],
+            pinned_missing_in_target=[],
+            pinned_extra_in_target=[],
             paired_source_count=0,
         )
 
@@ -312,6 +322,8 @@ class SyncLogicTests(unittest.TestCase):
             title_mismatches=[(source, target, "01 主线", "旧标题")],
             order_mismatches=[],
             timestamp_mismatches=[],
+            pinned_missing_in_target=[],
+            pinned_extra_in_target=[],
             paired_source_count=1,
         )
 
@@ -341,6 +353,8 @@ class SyncLogicTests(unittest.TestCase):
             title_mismatches=[],
             order_mismatches=[(1, first, second)],
             timestamp_mismatches=[],
+            pinned_missing_in_target=[],
+            pinned_extra_in_target=[],
             paired_source_count=2,
         )
 
@@ -366,10 +380,71 @@ class SyncLogicTests(unittest.TestCase):
             title_mismatches=[],
             order_mismatches=[],
             timestamp_mismatches=[(source, target, 1, 2)],
+            pinned_missing_in_target=[],
+            pinned_extra_in_target=[],
             paired_source_count=1,
         )
 
         self.assertTrue(diff.has_problems())
+
+    def test_mirror_diff_flags_pinned_mismatch(self):
+        diff = MirrorDiff(
+            source_provider="openai",
+            target_provider="custom",
+            source_count=1,
+            target_count=1,
+            source_archived_count=0,
+            target_archived_count=0,
+            missing_in_target=[],
+            extra_in_target=[],
+            paired_source_archived_extras=[],
+            source_active_target_archived=[],
+            source_archived_target_active=[],
+            archived_missing_in_target=[],
+            archived_extra_in_target=[],
+            title_mismatches=[],
+            order_mismatches=[],
+            timestamp_mismatches=[],
+            pinned_missing_in_target=[("official", "api")],
+            pinned_extra_in_target=[],
+            paired_source_count=1,
+        )
+
+        self.assertTrue(diff.has_problems())
+
+    def test_sync_pinned_state_maps_source_pins_to_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            paths = CodexPaths(home)
+            home.mkdir(parents=True, exist_ok=True)
+            paths.global_state.write_text(
+                json.dumps(
+                    {
+                        "electron-persisted-atom-state": {
+                            "pinned-thread-ids": ["official", "stale-api", "unrelated"]
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            pairs = [
+                Pair("main", "official", "api", "custom"),
+                Pair("stale", "stale-official", "stale-api", "custom"),
+            ]
+
+            report = sync_pinned_state(paths, pairs, lambda pair: pair.official, lambda pair: pair.api, apply=True)
+            diff = pinned_pair_diff(paths, pairs, lambda pair: pair.official, lambda pair: pair.api)
+            saved = json.loads(paths.global_state.read_text(encoding="utf-8"))
+            pinned = saved["electron-persisted-atom-state"]["pinned-thread-ids"]
+
+            self.assertTrue(report.changed)
+            self.assertIn("api", pinned)
+            self.assertIn("official", pinned)
+            self.assertIn("unrelated", pinned)
+            self.assertNotIn("stale-api", pinned)
+            self.assertEqual(diff.missing_in_target, [])
+            self.assertEqual(diff.extra_in_target, [])
 
 
 if __name__ == "__main__":

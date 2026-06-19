@@ -142,6 +142,7 @@ codex-handoff official
 - 同步左侧会话列表；
 - 同步会话标题；
 - 同步归档状态；
+- 同步置顶状态，把当前侧置顶会话映射到目标侧对应副本；
 - 默认排除 Automation 历史运行会话，避免不同 provider 的展示规则污染左侧列表；
 - 把归档会话的 JSONL 文件移动到 Codex Desktop 期望的位置；
 - 修复 SQLite 中残留的旧 JSONL 路径。
@@ -150,7 +151,7 @@ codex-handoff official
 
 切换命令运行期间不要继续在 Codex Desktop 发送消息。否则活跃会话会在备份过程中继续增长，命令完成后可能再次显示少量“待交接”内容。
 
-置顶会话由 Codex Desktop 单独管理。会话置顶后通常只显示在“置顶”区域，不再在项目分组中重复显示；这不代表会话被归档或丢失。本工具目前不跨 provider 修改置顶列表。
+置顶会话由 Codex Desktop 单独管理。会话置顶后通常只显示在“置顶”区域，不再在项目分组中重复显示；这不代表会话被归档或丢失。本工具会把当前侧置顶状态映射到目标侧对应 pair，但不会修改官方登录态或 provider 配置。
 
 ## 备份与恢复
 
@@ -202,6 +203,21 @@ powershell -ExecutionPolicy Bypass -File .\restore-codex-backup.ps1 -ConfirmRest
 恢复脚本会先把当前 `.codex` 移到一个 `before-restore-*` 目录，再恢复备份。
 
 ## 检查状态
+
+一键体检：
+
+```powershell
+codex-handoff doctor
+```
+
+只检查某个切换方向：
+
+```powershell
+codex-handoff doctor api
+codex-handoff doctor official
+```
+
+`doctor` 会检查可见会话、标题、归档、排序、更新时间、置顶状态和已接入会话 JSONL 内容是否一致。
 
 检查“切到 API 前是否已经准备好”：
 

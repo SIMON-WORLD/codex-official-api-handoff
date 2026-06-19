@@ -55,6 +55,10 @@ class CodexPaths:
     def pairs_file(self) -> Path:
         return self.handoff_dir / "pairs.json"
 
+    @property
+    def global_state(self) -> Path:
+        return self.home / ".codex-global-state.json"
+
 
 def strip_extended_prefix(path: str) -> Path:
     return Path(path.replace("\\\\?\\", ""))

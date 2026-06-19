@@ -5,7 +5,17 @@ import sys
 from pathlib import Path
 
 from .config import read_model_provider
-from .handoff import OFFICIAL_PROVIDER, copy_thread_to_provider, is_automation_thread, mirror_plan, run_mirror, run_to
+from .handoff import (
+    OFFICIAL_PROVIDER,
+    check_conclusion,
+    compute_mirror_diff,
+    copy_thread_to_provider,
+    is_automation_thread,
+    mirror_plan,
+    report_mirror_diff,
+    run_mirror,
+    run_to,
+)
 from .pairs import load_pairs, paired_ids, save_pairs
 from .paths import CodexPaths, default_backup_base, default_codex_home
 from .sqlite_store import ThreadRecord, ThreadStore
@@ -19,6 +29,27 @@ def ask_yes_no(prompt: str) -> bool:
         print("未收到确认输入，已取消。")
         return False
     return answer in {"y", "yes", "是", "好"}
+
+
+def print_handoff_messages(messages: list[str], detail_limit: int = 18) -> None:
+    skipped_same = 0
+    shown_details = 0
+    hidden_details = 0
+    for message in messages:
+        if message.startswith("会话 ") and "两边已经一致" in message:
+            skipped_same += 1
+            continue
+        is_detail = message.startswith("  ")
+        if is_detail:
+            if shown_details >= detail_limit:
+                hidden_details += 1
+                continue
+            shown_details += 1
+        print(message)
+    if skipped_same:
+        print(f"已省略 {skipped_same} 条无变化会话。")
+    if hidden_details:
+        print(f"已省略 {hidden_details} 条明细；需要完整诊断时运行 codex-handoff doctor。")
 
 
 def parse_selection(text: str, count: int) -> list[int]:
@@ -144,11 +175,11 @@ def run_mirror_short(paths: CodexPaths, target: str, backup_base: Path, yes: boo
     print(f"准备镜像左侧会话列表到：{target_label}")
     print(f"备份目录：{backup_base}")
     print("先进行预览，不会写入文件。")
+    print("提示：运行期间不要在 Codex Desktop 继续发送消息；否则活跃会话可能刚同步完又出现待交接。")
     print()
 
     dry_messages = run_mirror(paths, target, apply=False, backup_base=backup_base, prune_extras=True)
-    for message in dry_messages:
-        print(message)
+    print_handoff_messages(dry_messages)
 
     print()
     print("确认后会让目标侧左侧列表尽量变成和源侧一致：补齐缺少会话，同步内容、标题、排序，并归档隐藏目标侧额外会话。")
@@ -166,16 +197,26 @@ def run_mirror_short(paths: CodexPaths, target: str, backup_base: Path, yes: boo
     )
     backup_location = None
     for message in apply_messages:
-        print(message)
         if message.startswith("备份位置="):
             backup_location = message.split("=", 1)[1]
+    print_handoff_messages(apply_messages)
     if backup_location:
         print()
         print("如切换后发现异常，可完全退出 Codex Desktop 后运行下面的恢复命令：")
         print(f"cd \"{backup_location}\"")
         print("powershell -ExecutionPolicy Bypass -File .\\restore-codex-backup.ps1 -ConfirmRestore")
-    print(f"完成。现在可以用 cc-switch 切换到：{target_label}")
-    return 0
+    final_diff = compute_mirror_diff(paths, target)
+    conclusion, exit_code = check_conclusion(final_diff, target)
+    print()
+    print("最终状态：")
+    print(conclusion)
+    if exit_code == 0:
+        print(f"完成。现在可以用 cc-switch 切换到：{target_label}")
+        return 0
+    print("尚未完全一致，暂不建议切换。请先不要切换账号/API，重新运行同一条 codex-handoff 命令。")
+    for message in report_mirror_diff(final_diff)[:18]:
+        print(message)
+    return exit_code
 
 
 def run_daily_handoff(paths: CodexPaths, target: str, backup_base: Path, yes: bool = False) -> int:
@@ -191,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")
     parser = argparse.ArgumentParser(prog="codex-handoff")
-    parser.add_argument("target", choices=["api", "official", "connect", "mirror", "sync"], help="要切换到 API、官方账号，接入更多会话，或镜像左侧列表。")
+    parser.add_argument("target", choices=["api", "official", "connect", "mirror", "sync", "doctor"], help="要切换到 API、官方账号，接入更多会话，或检查状态。")
     parser.add_argument("connect_target", nargs="?", choices=["api", "official"], help="connect 时要接入到哪里。")
     parser.add_argument("--codex-home", type=Path, default=default_codex_home())
     parser.add_argument("--backup-base", type=Path, default=default_backup_base())
@@ -209,6 +250,11 @@ def main(argv: list[str] | None = None) -> int:
         if not args.connect_target:
             parser.error("mirror 需要指定 api 或 official")
         return run_mirror_short(paths, args.connect_target, args.backup_base, yes=args.yes)
+
+    if args.target == "doctor":
+        from .cli import run_doctor
+
+        return run_doctor(paths, args.connect_target)
 
     if args.target in {"api", "official"}:
         return run_daily_handoff(paths, args.target, args.backup_base, yes=args.yes)

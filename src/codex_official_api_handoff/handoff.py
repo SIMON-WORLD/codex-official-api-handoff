@@ -59,6 +59,8 @@ class MirrorDiff:
     title_mismatches: list[tuple[ThreadRecord, ThreadRecord, str, str]]
     order_mismatches: list[tuple[int, ThreadRecord | None, ThreadRecord | None]]
     timestamp_mismatches: list[tuple[ThreadRecord, ThreadRecord, int | None, int | None]]
+    pinned_missing_in_target: list[tuple[str, str]]
+    pinned_extra_in_target: list[tuple[str, str]]
     paired_source_count: int
 
     def has_problems(self) -> bool:
@@ -70,6 +72,8 @@ class MirrorDiff:
             or self.title_mismatches
             or self.order_mismatches
             or self.timestamp_mismatches
+            or self.pinned_missing_in_target
+            or self.pinned_extra_in_target
         )
 
     def has_archive_mismatch(self) -> bool:
@@ -84,6 +88,110 @@ class MirrorDiff:
 
 def provider_label(provider: str) -> str:
     return "官方" if provider == OFFICIAL_PROVIDER else "API"
+
+
+@dataclass
+class PinnedReport:
+    source_pinned: int
+    target_pinned: int
+    missing_in_target: list[tuple[str, str]]
+    extra_in_target: list[tuple[str, str]]
+    changed: bool = False
+
+
+def load_global_state(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def save_global_state(path: Path, state: dict) -> None:
+    path.write_text(json.dumps(state, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+
+
+def pinned_thread_ids(state: dict) -> list[str]:
+    atom_state = state.get("electron-persisted-atom-state")
+    if not isinstance(atom_state, dict):
+        return []
+    pinned = atom_state.get("pinned-thread-ids")
+    return [item for item in pinned if isinstance(item, str)] if isinstance(pinned, list) else []
+
+
+def set_pinned_thread_ids(state: dict, pinned: list[str]) -> None:
+    atom_state = state.setdefault("electron-persisted-atom-state", {})
+    if isinstance(atom_state, dict):
+        atom_state["pinned-thread-ids"] = pinned
+
+
+def pinned_pair_diff(
+    paths: CodexPaths,
+    pairs: list[Pair],
+    source_pair_id,
+    target_pair_id,
+) -> PinnedReport:
+    state = load_global_state(paths.global_state)
+    pinned = pinned_thread_ids(state)
+    pinned_set = set(pinned)
+    missing: list[tuple[str, str]] = []
+    extra: list[tuple[str, str]] = []
+    source_count = 0
+    target_count = 0
+    for pair in pairs:
+        source_id = source_pair_id(pair)
+        target_id = target_pair_id(pair)
+        source_is_pinned = source_id in pinned_set
+        target_is_pinned = target_id in pinned_set
+        if source_is_pinned:
+            source_count += 1
+        if target_is_pinned:
+            target_count += 1
+        if source_is_pinned and not target_is_pinned:
+            missing.append((source_id, target_id))
+        elif not source_is_pinned and target_is_pinned:
+            extra.append((source_id, target_id))
+    return PinnedReport(source_count, target_count, missing, extra)
+
+
+def sync_pinned_state(
+    paths: CodexPaths,
+    pairs: list[Pair],
+    source_pair_id,
+    target_pair_id,
+    apply: bool,
+) -> PinnedReport:
+    state = load_global_state(paths.global_state)
+    pinned = pinned_thread_ids(state)
+    pinned_set = set(pinned)
+    report = pinned_pair_diff(paths, pairs, source_pair_id, target_pair_id)
+    target_ids = {target_pair_id(pair) for pair in pairs}
+    desired_target_ids = {target_id for _, target_id in report.missing_in_target}
+    desired_target_ids.update(
+        target_pair_id(pair)
+        for pair in pairs
+        if source_pair_id(pair) in pinned_set
+    )
+    next_pinned = [
+        thread_id
+        for thread_id in pinned
+        if thread_id not in target_ids or thread_id in desired_target_ids
+    ]
+    for thread_id in sorted(desired_target_ids):
+        if thread_id not in next_pinned:
+            next_pinned.append(thread_id)
+    changed = next_pinned != pinned
+    if apply and changed:
+        set_pinned_thread_ids(state, next_pinned)
+        save_global_state(paths.global_state, state)
+    return PinnedReport(
+        report.source_pinned,
+        len([thread_id for thread_id in next_pinned if thread_id in target_ids]),
+        report.missing_in_target,
+        report.extra_in_target,
+        changed,
+    )
 
 
 GENERIC_TITLES = {"你好", "新聊天", "New chat", "Untitled"}
@@ -901,6 +1009,7 @@ def compute_mirror_diff(
             if record.id in pairs_by_source_id
         }
         archived_extra = [record for record in target_archived if record.id not in source_archived_target_ids]
+        pinned = pinned_pair_diff(paths, pairs, source_pair_id, target_pair_id)
         return MirrorDiff(
             source_provider=source_provider,
             target_provider=target_provider,
@@ -918,6 +1027,8 @@ def compute_mirror_diff(
             title_mismatches=title_mismatches,
             order_mismatches=order_mismatches,
             timestamp_mismatches=timestamp_mismatches,
+            pinned_missing_in_target=pinned.missing_in_target,
+            pinned_extra_in_target=pinned.extra_in_target,
             paired_source_count=len(paired_source),
         )
     finally:
@@ -939,6 +1050,7 @@ def report_mirror_diff(diff: MirrorDiff, prune_extras: bool = False) -> list[str
         f"已接入会话标题不一致：{len(diff.title_mismatches)} 条",
         f"已接入会话排序不一致：{len(diff.order_mismatches)} 条",
         f"已接入会话更新时间不一致：{len(diff.timestamp_mismatches)} 条",
+        f"置顶状态不一致：{len(diff.pinned_missing_in_target) + len(diff.pinned_extra_in_target)} 条",
     ]
     if diff.paired_source_archived_extras:
         messages.append(f"其中源侧已归档的配对会话：{len(diff.paired_source_archived_extras)} 条，将同步归档")
@@ -973,6 +1085,10 @@ def report_mirror_diff(diff: MirrorDiff, prune_extras: bool = False) -> list[str
             f"  更新时间不一致 - {source.id} -> {target.id}："
             f"源侧 {source_updated}，目标侧 {target_updated}"
         )
+    for source_id, target_id in diff.pinned_missing_in_target[:20]:
+        messages.append(f"  置顶缺少 - 源侧 {source_id} 已置顶，目标侧 {target_id} 未置顶")
+    for source_id, target_id in diff.pinned_extra_in_target[:20]:
+        messages.append(f"  置顶多余 - 源侧 {source_id} 未置顶，目标侧 {target_id} 仍置顶")
     return messages
 
 
@@ -1186,6 +1302,15 @@ def run_mirror(
         store.commit()
     finally:
         store.close()
+    pinned_report = sync_pinned_state(paths, pairs, source_pair_id, target_pair_id, apply=True)
+    if pinned_report.changed:
+        messages.append(
+            f"已同步置顶状态：源侧置顶 {pinned_report.source_pinned} 条，目标侧置顶 {pinned_report.target_pinned} 条"
+        )
+    else:
+        messages.append(
+            f"置顶状态已一致：源侧置顶 {pinned_report.source_pinned} 条，目标侧置顶 {pinned_report.target_pinned} 条"
+        )
     save_pairs(paths.pairs_file, pairs)
     after = compute_mirror_diff(
         paths,

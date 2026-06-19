@@ -5,9 +5,20 @@ import sys
 from pathlib import Path
 
 from .config import read_model_provider
-from .handoff import check_conclusion, compute_mirror_diff, copy_one, refresh_session_index, report_mirror_diff, run_to, set_pair_title
+from .handoff import (
+    check_conclusion,
+    compute_mirror_diff,
+    copy_one,
+    existing_rollout_path,
+    infer_mirror_providers,
+    refresh_session_index,
+    report_mirror_diff,
+    run_to,
+    set_pair_title,
+)
 from .pairs import Pair, load_pairs, pair_names, save_pairs
 from .paths import CodexPaths, default_backup_base, default_codex_home
+from .rollout import common_prefix, load_jsonl
 from .sqlite_store import ThreadStore
 
 
@@ -21,7 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("doctor")
+    doctor_parser = subparsers.add_parser("doctor")
+    doctor_parser.add_argument("target", nargs="?", choices=["api", "official"])
     check_parser = subparsers.add_parser("check")
     check_parser.add_argument("target", choices=["api", "official"])
 
@@ -62,11 +74,52 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run_doctor(paths: CodexPaths) -> int:
+def content_mismatch_count(paths: CodexPaths, target: str) -> tuple[int, list[str]]:
+    _, source_provider, target_provider = infer_mirror_providers(paths, target)
+    pairs = load_pairs(paths.pairs_file)
+    source_pair_id = (lambda pair: pair.official) if source_provider == "openai" else (lambda pair: pair.api)
+    target_pair_id = (lambda pair: pair.api) if target_provider != "openai" else (lambda pair: pair.official)
+    mismatches: list[str] = []
+    checked = 0
+    store = ThreadStore(paths.state_db, readonly=True)
+    try:
+        for pair in pairs:
+            try:
+                source = store.get(source_pair_id(pair))
+                target_record = store.get(target_pair_id(pair))
+            except KeyError:
+                continue
+            if source.archived or target_record.archived:
+                continue
+            checked += 1
+            try:
+                source_lines = load_jsonl(existing_rollout_path(paths, source))
+                target_lines = load_jsonl(existing_rollout_path(paths, target_record))
+            except FileNotFoundError:
+                mismatches.append(f"{pair.name}: JSONL 文件缺失")
+                continue
+            common = common_prefix(
+                source_lines,
+                target_lines,
+                source.id,
+                target_record.id,
+                target_record.provider,
+            )
+            if common != len(source_lines) or len(source_lines) != len(target_lines):
+                mismatches.append(
+                    f"{pair.name}: source={len(source_lines)} target={len(target_lines)} common={common}"
+                )
+    finally:
+        store.close()
+    return checked, mismatches
+
+
+def run_doctor(paths: CodexPaths, target: str | None = None) -> int:
     print(f"codex_home={paths.home}")
     print(f"config_exists={paths.config.exists()}")
     print(f"auth_exists={paths.auth.exists()}")
     print(f"model_provider={read_model_provider(paths.config)}")
+    print(f"global_state_exists={paths.global_state.exists()}")
     print(f"pairs_file={paths.pairs_file}")
     print(f"pairs={len(load_pairs(paths.pairs_file))}")
 
@@ -76,7 +129,29 @@ def run_doctor(paths: CodexPaths) -> int:
             print(f"threads[{provider}]={count}")
     finally:
         store.close()
-    return 0
+    targets = [target] if target else ["api", "official"]
+    exit_code = 0
+    for item in targets:
+        print()
+        print(f"== doctor {item} ==")
+        diff = compute_mirror_diff(paths, item)
+        for message in report_mirror_diff(diff):
+            print(message)
+        conclusion, code = check_conclusion(diff, item)
+        print(conclusion)
+        checked, mismatches = content_mismatch_count(paths, item)
+        print(f"JSONL 内容检查：已检查 {checked} 条，异常 {len(mismatches)} 条")
+        for mismatch in mismatches[:20]:
+            print(f"  JSONL 不一致 - {mismatch}")
+        if code or mismatches:
+            exit_code = 1
+    if exit_code == 0:
+        print()
+        print("doctor 结论：当前检查项通过。")
+    else:
+        print()
+        print("doctor 结论：仍有不一致；切换前请先运行对应的 codex-handoff 命令。")
+    return exit_code
 
 
 def run_pair(paths: CodexPaths, args: argparse.Namespace) -> int:
@@ -116,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     paths = CodexPaths(args.codex_home)
 
     if args.command == "doctor":
-        return run_doctor(paths)
+        return run_doctor(paths, args.target)
 
     if args.command == "check":
         diff = compute_mirror_diff(paths, args.target)
